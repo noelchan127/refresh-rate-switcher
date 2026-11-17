@@ -1,0 +1,45 @@
+name: Build and release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build app
+        run: dotnet build -c Release
+
+      - name: Install NSIS
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) { choco install nsis -y --no-progress }
+          echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
+
+      - name: Build installer
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          makensis installer.nsi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RefreshRateSwitcher
+          path: |
+            out/*.exe
+            bin/Release/net48/RefreshRateSwitcher.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.exe
