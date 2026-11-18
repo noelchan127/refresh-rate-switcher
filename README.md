@@ -64,6 +64,9 @@ This closes the app and removes files, the Start Menu entry, the startup entry a
 
 Installer: `makensis installer.nsi` (NSIS 3) after building; output goes to `out\`.
 
+## Security
+To report a security problem, please see [SECURITY.md](SECURITY.md). Don't post it in a public issue.
+
 ## License
 Copyright (C) 2026 noelchan127
 
