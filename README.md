@@ -27,3 +27,12 @@ This closes the app and removes files, the Start Menu entry, the startup entry a
 `dotnet build -c Release` (needs the .NET SDK; the .NET Framework 4.8 reference assemblies come from NuGet automatically).
 
 Installer: `makensis installer.nsi` (NSIS 3) after building; output goes to `out\`.
+
+## License
+Copyright (C) 2026 noelchan127
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed WITHOUT ANY WARRANTY; see
+[LICENSE](LICENSE) for the full terms.
+

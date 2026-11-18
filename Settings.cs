@@ -1,3 +1,7 @@
+// Refresh Rate Switcher
+// Copyright (C) 2026 noelchan127
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 using System;
 using System.Windows.Forms;
 using Microsoft.Win32;

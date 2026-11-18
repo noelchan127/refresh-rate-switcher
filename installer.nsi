@@ -59,6 +59,7 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File "${EXE}"
   File "app.ico"
+  File "/oname=LICENSE.txt" "LICENSE"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
@@ -84,6 +85,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
   Delete "$INSTDIR\${EXENAME}"
   Delete "$INSTDIR\app.ico"
+  Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir  "$INSTDIR"
 
