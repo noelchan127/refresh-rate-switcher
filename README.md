@@ -11,6 +11,16 @@ in Settings → Apps → Installed apps. Running the setup again upgrades in pla
 On first run the app picks max Hz for plugged in, 60 Hz (or the lowest) for battery,
 and enables "Start with Windows".
 
+### Security warnings
+The installer and app are **not code-signed**, so Windows may warn you the first time:
+- **SmartScreen** ("Windows protected your PC"): click **More info → Run anyway**.
+- **Antivirus**: some products may flag unsigned installers like this one, partly because setup closes a
+  running copy of the app before upgrading. This is a false positive.
+
+Every release is built by [GitHub Actions](../../actions/workflows/release.yml) directly from the source in
+this repository, so you can see exactly what went into it. If you'd rather not trust a pre-built binary,
+[build it from source](#build-from-source).
+
 ## Use
 Click the tray icon (number = current Hz; blue = plugged in, amber = battery, grey = disabled),
 or open it from the Start Menu while it's running to pop up the same menu:
