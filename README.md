@@ -4,7 +4,7 @@ Windows tray app that sets the display refresh rate automatically depending on w
 the laptop is plugged in or on battery.
 
 ## Install
-Run `RefreshRateSwitcher-Setup-1.1.0.exe`. It installs per-user (no admin) to
+Download `RefreshRateSwitcher-Setup-<version>.exe` from the [latest release](../../releases/latest) and run it. It installs per-user (no admin) to
 `%LOCALAPPDATA%\Programs\Refresh Rate Switcher`, adds a Start Menu entry, and registers
 in Settings → Apps → Installed apps. Running the setup again upgrades in place and keeps your settings.
 
