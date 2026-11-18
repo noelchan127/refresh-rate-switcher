@@ -10,7 +10,7 @@
     <RootNamespace>RefreshRateSwitcher</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Product>Refresh Rate Switcher</Product>
     <Copyright>Copyright (C) 2026 noelchan127 – GPL-3.0-or-later</Copyright>
     <Description>Switches display refresh rate on AC / battery</Description>

@@ -1,7 +1,11 @@
 Windows tray app that sets the display refresh rate automatically when you plug in or unplug.
 
+### What's new in 1.1.1
+- Licensed under the **GNU GPL v3 (or later)**. The installer now includes `LICENSE.txt`.
+- No functional changes from 1.1.0. Installing over 1.1.0 keeps your settings.
+
 ### Install
-Download **RefreshRateSwitcher-Setup-1.1.0.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
+Download **RefreshRateSwitcher-Setup-1.1.1.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
 
 Windows SmartScreen may warn because the installer isn't code-signed: click **More info → Run anyway**.
 

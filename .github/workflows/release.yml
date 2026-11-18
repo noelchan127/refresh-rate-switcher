@@ -8,7 +8,7 @@ on:
       version:
         description: 'Version to release (e.g. 1.1.0) – creates tag v<version>'
         required: true
-        default: '1.1.0'
+        default: '1.1.1'
 
 permissions:
   contents: write
