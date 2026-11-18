@@ -1,8 +1,12 @@
 name: Build and release
 
+# - Every push to main and every pull request (including Dependabot updates) gets a test build.
+# - A release is only published when a v* tag is pushed, or when run manually from the Actions tab.
 on:
   push:
+    branches: [main]
     tags: ['v*']
+  pull_request:
   workflow_dispatch:
     inputs:
       version:
@@ -10,18 +14,21 @@ on:
         required: true
         default: '1.1.2'
 
+# Read-only by default; only the release job below gets write access.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Build app
         run: dotnet build -c Release
@@ -43,12 +50,28 @@ jobs:
             out/*.exe
             bin/Release/net48/RefreshRateSwitcher.exe
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: RefreshRateSwitcher
+          path: artifact
+
+      - name: Publish release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
           target_commitish: ${{ github.sha }}
           name: Refresh Rate Switcher ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
           body_path: .github/release-notes.md
-          files: out/*.exe
+          files: artifact/out/*.exe
