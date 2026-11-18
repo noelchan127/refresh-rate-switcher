@@ -23,6 +23,14 @@ or open it from the Start Menu while it's running to pop up the same menu:
 Settings → Apps → Installed apps → Refresh Rate Switcher → Uninstall.
 This closes the app and removes files, the Start Menu entry, the startup entry and saved settings.
 
+## Known limitations
+- **Not compatible with Windows 11 Dynamic refresh rate (DRR).** This app sets a *fixed* refresh rate,
+  which turns DRR ("Dynamic (xx Hz)" in Settings) off, and Windows offers no way for apps to turn it back on.
+  If you rely on DRR, don't use this app (or turn off auto-switch). To restore DRR after uninstalling,
+  re-select it in Settings → System → Display → Advanced display → Choose a refresh rate.
+- Laptop vendor utilities (e.g. Armoury Crate, Lenovo Vantage, Dell/HP tools) that also change the refresh rate
+  on power events will conflict with this app. Turn that feature off in the vendor tool.
+
 ## Build from source
 `dotnet build -c Release` (needs the .NET SDK; the .NET Framework 4.8 reference assemblies come from NuGet automatically).
 

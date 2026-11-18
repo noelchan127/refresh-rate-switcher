@@ -16,4 +16,6 @@ Windows SmartScreen may warn because the installer isn't code-signed: click **Mo
 - Starts with Windows, lives in the tray; the icon shows the current Hz (blue = AC, amber = battery, grey = disabled)
 - Re-applies after sleep/resume
 
+**Not compatible with Windows 11 Dynamic refresh rate (DRR):** setting a fixed rate turns DRR off. See the README's Known limitations.
+
 Requires Windows 10 (1903+) or 11 (.NET Framework 4.8, already built in).
