@@ -1,12 +1,12 @@
 Windows tray app that sets the display refresh rate automatically when you plug in or unplug.
 
-### What's new in 1.1.2
-- Documented that the app is **not compatible with Windows 11 Dynamic refresh rate (DRR)**, and conflicts with laptop vendor tools that also switch refresh rate.
-- Explained the SmartScreen / antivirus warnings shown for the unsigned installer.
-- No functional changes since 1.1.1. Installing over an earlier version keeps your settings. Licensed under GNU GPL v3 (or later).
+### What's new in 1.1.3
+- Built with the supported .NET 10 SDK and updated, pinned build tools. Every change is now test-built automatically.
+- README now includes screenshots.
+- No functional changes since 1.1.2. Installing over an earlier version keeps your settings. Licensed under GNU GPL v3 (or later).
 
 ### Install
-Download **RefreshRateSwitcher-Setup-1.1.2.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
+Download **RefreshRateSwitcher-Setup-1.1.3.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
 
 Windows SmartScreen may warn because the installer isn't code-signed: click **More info → Run anyway**. Some antivirus products may also flag it; this is a false positive. The installer is built by GitHub Actions directly from this repository's source.
 

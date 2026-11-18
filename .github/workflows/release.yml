@@ -12,7 +12,7 @@ on:
       version:
         description: 'Version to release (e.g. 1.1.0) – creates tag v<version>'
         required: true
-        default: '1.1.2'
+        default: '1.1.3'
 
 # Read-only by default; only the release job below gets write access.
 permissions:

@@ -7,7 +7,7 @@ Unicode true
 !define APPNAME   "Refresh Rate Switcher"
 !define APPID     "RefreshRateSwitcher"
 !define EXENAME   "RefreshRateSwitcher.exe"
-!define VERSION   "1.1.2"
+!define VERSION   "1.1.3"
 !define PUBLISHER "Noel"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}"
 !ifndef EXE
