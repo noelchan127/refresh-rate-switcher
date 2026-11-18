@@ -17,8 +17,7 @@ Report them privately through GitHub instead:
 3. Describe the problem, the version and Windows version you used, and the steps to reproduce it.
 
 Only the maintainer can see the report. This is a one-person hobby project, so replies are
-best-effort. I'll aim to acknowledge reports within a week and to let you know what
-happens next. Once a fix is released, you'll be credited in the advisory unless you'd prefer not to be.
+best-effort, but I'll let you know what happens next. Once a fix is released, you'll be credited in the advisory unless you'd prefer not to be.
 
 ## Scope
 
