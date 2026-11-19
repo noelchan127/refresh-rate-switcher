@@ -1,5 +1,5 @@
 // Refresh Rate Switcher
-// Copyright (C) 2026 noelchan127
+// Copyright (C) 2026 Noel Chan
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using System.Collections.Generic;
@@ -28,7 +28,7 @@ namespace RefreshRateSwitcher
     internal static class AppInfo
     {
         public const string Name = "Refresh Rate Switcher";
-        public const string Author = "noelchan127";
+        public const string Author = "Noel Chan";
         public const string AuthorUrl = "https://github.com/noelchan127";
         public const string RepoUrl = "https://github.com/noelchan127/refresh-rate-switcher";
         public const string ReleasesUrl = RepoUrl + "/releases/latest";

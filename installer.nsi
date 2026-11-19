@@ -14,7 +14,7 @@ Unicode true
 !define APPID     "RefreshRateSwitcher"
 !define EXENAME   "RefreshRateSwitcher.exe"
 !define VERSION   "1.2.0"
-!define PUBLISHER "Noel"
+!define PUBLISHER "Noel Chan"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}"
 !define RUNKEY    "Software\Microsoft\Windows\CurrentVersion\Run"
 !ifndef BINDIR
@@ -38,7 +38,7 @@ VIAddVersionKey "FileDescription" "${APPNAME} Setup"
 VIAddVersionKey "FileVersion"     "${VERSION}"
 VIAddVersionKey "ProductVersion"  "${VERSION}"
 VIAddVersionKey "CompanyName"     "${PUBLISHER}"
-VIAddVersionKey "LegalCopyright"  "${PUBLISHER}"
+VIAddVersionKey "LegalCopyright"  "Copyright (C) 2026 ${PUBLISHER}"
 
 !define MUI_ICON   "app.ico"
 !define MUI_UNICON "app.ico"

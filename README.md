@@ -111,7 +111,7 @@ which installs, upgrades, runs and uninstalls the app on Windows for every chang
 To report a security problem, please see [SECURITY.md](SECURITY.md). Don't post it in a public issue.
 
 ## License
-Copyright (C) 2026 noelchan127
+Copyright (C) 2026 Noel Chan
 
 This program is free software: you can redistribute it and/or modify it under the terms of the
 GNU General Public License as published by the Free Software Foundation, either version 3 of the

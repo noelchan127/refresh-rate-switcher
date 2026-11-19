@@ -1,5 +1,5 @@
 // Refresh Rate Switcher
-// Copyright (C) 2026 noelchan127
+// Copyright (C) 2026 Noel Chan
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using System;

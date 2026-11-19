@@ -1,5 +1,5 @@
 # Refresh Rate Switcher – end-to-end tests on a real Windows machine (run by GitHub Actions).
-# Copyright (C) 2026 noelchan127
+# Copyright (C) 2026 Noel Chan
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Covers: built-in self-test, silent install/uninstall, the "start with Windows" choice,
