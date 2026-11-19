@@ -110,7 +110,7 @@ namespace RefreshRateSwitcher
 
         static List<int> FakeRates(DisplayInfo d)
         {
-            if (d.IsInternal) return new List<int> { 48, 60, 120, 165 };
+            if (d.IsInternal) return d.Width == 2880 ? new List<int> { 60, 120 } : new List<int> { 48, 60, 120, 165 };
             if (d.Name.StartsWith("DELL")) return new List<int> { 30, 50, 59, 60 };
             return new List<int> { 60, 100, 120, 144 };
         }
@@ -335,6 +335,26 @@ namespace RefreshRateSwitcher
                 }
             }
             Check(SettingsForm.DiagnosticText(new FakeHost(Laptop(), true)).Contains("rates: 48, 60, 120, 165"), "system info text for bug reports");
+
+            // Example for the README: a laptop with one external monitor, both switched
+            var l = Laptop();
+            l[0].Width = 2880; l[0].Height = 1800; l[0].CurrentHz = 120;
+            var readme = new FakeHost(new List<DisplayInfo> { l[0], l[3] }, ac: true);
+            foreach (var ds in readme.Settings.Displays.Values) { ds.Managed = true; ds.BatteryHz = 60; }
+            using (var f = new SettingsForm(readme))
+            {
+                f.StartPosition = FormStartPosition.Manual;
+                f.Location = new Point(-20000, -20000);
+                f.ShowInTaskbar = false;
+                f.Show();
+                Application.DoEvents();
+                using (var bmp = new Bitmap(f.Width, f.Height))
+                {
+                    f.DrawToBitmap(bmp, new Rectangle(Point.Empty, f.Size));
+                    bmp.Save(Path.Combine(dir, "readme-2displays.png"), ImageFormat.Png);
+                }
+                f.Close();
+            }
         }
 
         static IEnumerable<Control> AllControls(Control c)
