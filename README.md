@@ -9,6 +9,11 @@ plugged in and another for when you're on battery, and it switches automatically
 source changes. It sits in the system tray, works with multiple displays (each with its own settings),
 and needs no admin rights or internet access.
 
+> [!WARNING]
+> **Not compatible with Windows 11 Dynamic refresh rate (DRR).** The app sets a *fixed* rate as soon as it
+> starts, before you open its settings, which turns DRR ("Dynamic (xx Hz)") off. If you rely on DRR, don't
+> install it. See [Known limitations](#known-limitations) for how to restore DRR.
+
 This is a one-person hobby project I made to fix a personal annoyance. I'll look at issues and suggestions
 when I can, but please forgive me if I'm slow to respond.
 
@@ -23,14 +28,16 @@ Setup asks whether to **start the app when you sign in to Windows** (recommended
 For silent installs, use `/S`, and add `/NOSTARTUP` to skip the startup entry.
 
 On first run, the built-in laptop screen is set to switch between its highest rate when plugged in and
-60 Hz (or its lowest rate) on battery. External monitors are left alone until you turn them on in Settings.
+60 Hz (or its lowest rate) on battery. External monitors are left alone until you turn them on in Settings,
+with one exception: on a PC with no built-in screen (a desktop), the main monitor is switched from the start.
 
 ### Security warnings
 The installer and app are **not code-signed**, so Windows may warn you the first time:
 - **SmartScreen** ("Windows protected your PC"): click **Run anyway**. On some versions of Windows,
   click **More info** first.
-- **Antivirus**: some products may flag unsigned installers like this one, partly because setup closes a
-  running copy of the app before upgrading.
+- **Antivirus**: some products may flag unsigned installers like this one. Setup asks a running copy of the
+  app to exit before upgrading; only for versions before 1.2.2, which don't understand that request, does it
+  stop the process running from the install folder (never other programs with the same name).
 
 <p align="center"><img src="docs/screenshots/smartscreen.png" width="420" alt="Windows SmartScreen warning for RefreshRateSwitcher-Setup with a Run anyway button"></p>
 
@@ -65,7 +72,9 @@ Changes apply immediately. Closing the window keeps the app running in the tray.
 <sub>Example with an external monitor connected</sub></p>
 
 Settings follow the monitor rather than the port, so a monitor keeps its settings when you plug it into a
-different port or dock. Two identical monitors are told apart by the port they're connected to.
+different port or dock. Two identical monitors (same make and model) are told apart by the port they were
+last connected to: plugging in a second one doesn't change the first one's settings, but if you swap their
+cables, they swap settings.
 
 The **About** tab shows the version, licence and links to the latest release and the source code.
 The app itself never connects to the internet, so it doesn't check for updates automatically:
@@ -95,7 +104,7 @@ This closes the app and removes files, the Start Menu entry, the startup entry a
   on power events will conflict with this app. Turn that feature off in the vendor tool.
 - Displays set to **Duplicate** share one refresh rate, so they appear as a single entry.
 - If you change a display's rate yourself in Windows Settings, the app leaves it until the next time you
-  plug in or unplug.
+  plug in or unplug, or the PC wakes from sleep (some drivers reset the rate on wake, so it's set again then).
 
 ## Build from source
 `dotnet build -c Release` (needs the .NET SDK; the .NET Framework 4.8 reference assemblies come from NuGet automatically).

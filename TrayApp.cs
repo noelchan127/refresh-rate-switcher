@@ -26,16 +26,22 @@ namespace RefreshRateSwitcher
         Icon _currentIcon;
         SettingsForm _form;
 
-        // Rate last applied to each display for the current power state. A display-change event
-        // (monitor plugged in, resolution changed, or our own change) only touches displays not in
-        // here, so a rate the user picks in Windows Settings isn't fought over, and a driver that
-        // reports a slightly different rate can't cause a loop.
-        readonly Dictionary<string, (int hz, bool ac)> _applied = new Dictionary<string, (int, bool)>(StringComparer.OrdinalIgnoreCase);
+        readonly ApplyCache _cache = new ApplyCache();
+        int _retries;   // follow-up passes scheduled for failed changes or rates not reported yet
+
+        // Power source the rates were last applied for. Battery-percentage notifications arrive as
+        // the same event as plugging in or unplugging; only a real change re-applies the rates.
+        bool _lastAC;
 
         // Signalled by a second launch (e.g. Start Menu shortcut) to open this instance's window
         public const string ShowMenuEventName = @"Local\RefreshRateSwitcher_ShowMenu";
         readonly EventWaitHandle _showEvent;
         readonly RegisteredWaitHandle _showWait;
+
+        // Signalled by the installer/uninstaller to ask this copy to exit cleanly (installer.nsi uses the same name)
+        public const string ExitEventName = @"Local\RefreshRateSwitcher_Exit";
+        readonly EventWaitHandle _exitEvent;
+        readonly RegisteredWaitHandle _exitWait;
         readonly Control _uiInvoker = new Control();
 
         public TrayApp(bool background)
@@ -56,6 +62,11 @@ namespace RefreshRateSwitcher
             {
                 try { _uiInvoker.BeginInvoke((Action)(() => OpenSettings())); } catch { }
             }, null, Timeout.Infinite, false);
+            _exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ExitEventName);
+            _exitWait = ThreadPool.RegisterWaitForSingleObject(_exitEvent, (st, timedOut) =>
+            {
+                try { _uiInvoker.BeginInvoke((Action)ExitThread); } catch { }
+            }, null, Timeout.Infinite, true);
 
             _debounce = new System.Windows.Forms.Timer();
             _debounce.Tick += (s, e) => { _debounce.Stop(); var r = _pendingReason; _pendingReason = ""; Apply(r); };
@@ -67,6 +78,7 @@ namespace RefreshRateSwitcher
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
+            _lastAC = OnAC;
             Apply("startup");
             if (firstRun) _settings.Save();
 
@@ -82,7 +94,13 @@ namespace RefreshRateSwitcher
         // Unknown (e.g. desktops without a battery) is treated as plugged in
         public bool OnAC => SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Offline;
 
-        public List<DisplayInfo> Displays() => NativeDisplay.GetDisplays();
+        /// <summary>Connected displays, each keyed to the settings it was saved under.</summary>
+        public List<DisplayInfo> Displays()
+        {
+            var list = NativeDisplay.GetDisplays();
+            if (_settings.BindKeys(list)) Save();
+            return list;
+        }
         public List<int> Rates(DisplayInfo d) => NativeDisplay.GetSupportedRates(d.DeviceName);
 
         public void SetEnabled(bool on)
@@ -158,9 +176,9 @@ namespace RefreshRateSwitcher
 
         void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
-            // StatusChange fires for AC/DC changes (and battery % changes – Apply() is a no-op then).
+            // StatusChange fires for AC/DC changes and also battery % changes: Apply() checks which.
             // Resume: some drivers reset the mode after sleep, so re-apply after a short delay.
-            if (e.Mode == PowerModes.StatusChange) Schedule("power change", 1500);
+            if (e.Mode == PowerModes.StatusChange) Schedule("power status", 1500);
             else if (e.Mode == PowerModes.Resume) Schedule("resume", 4000);
         }
 
@@ -171,10 +189,22 @@ namespace RefreshRateSwitcher
             Schedule("display change", 2000);
         }
 
+        // Re-applies everything (and forgets earlier attempts), as opposed to only touching displays
+        // that changed. Apply() downgrades "power status" to a display change if the source didn't change.
+        internal static bool FullApply(string reason) => reason != "display change" && reason != "retry";
+
+        /// <summary>
+        /// "power status" (any power notification) counts as a power change only if the power source
+        /// actually changed. Battery-percentage updates are handled like a display change, so a rate
+        /// the user picked in Windows Settings stays until they plug in or unplug.
+        /// </summary>
+        internal static string ResolveReason(string reason, bool ac, bool lastAC) =>
+            reason != "power status" ? reason : ac != lastAC ? "power change" : "display change";
+
         void Schedule(string reason, int ms)
         {
             // A pending power/resume re-apply outranks a display-change one
-            if (reason == "display change" && _pendingReason != "" && _pendingReason != "display change") return;
+            if (!FullApply(reason) && _pendingReason != "" && FullApply(_pendingReason)) return;
             _pendingReason = reason;
             _debounce.Stop();
             _debounce.Interval = ms;
@@ -186,47 +216,62 @@ namespace RefreshRateSwitcher
         void Apply(string reason)
         {
             List<DisplayInfo> displays;
-            try { displays = NativeDisplay.GetDisplays(); }
+            try { displays = Displays(); }
             catch { return; }
 
             if (_settings.EnsureDisplays(displays, Rates)) Save();
 
-            bool displayChange = reason == "display change";
+            bool ac = OnAC;
+            reason = ResolveReason(reason, ac, _lastAC);
+            _lastAC = ac;
+
+            bool displayChange = !FullApply(reason);
             if (displayChange)
-            {
-                // Forget unplugged monitors so they're set again when reconnected
-                var connected = new HashSet<string>(displays.Select(d => d.Key), StringComparer.OrdinalIgnoreCase);
-                foreach (var k in _applied.Keys.Where(k => !connected.Contains(k)).ToList()) _applied.Remove(k);
-            }
+                _cache.KeepOnly(displays.Select(d => d.Key));   // unplugged monitors are set again when reconnected
             else
-                _applied.Clear();
+            {
+                _cache.Clear();
+                _retries = 0;
+            }
 
             var changed = new List<string>();
+            bool retry = false;
             if (_settings.Enabled)
             {
-                bool ac = OnAC;
                 foreach (var d in displays)
                 {
                     var ds = _settings.Get(d.Key);
                     if (ds == null || !ds.Managed) continue;
                     int wanted = ac ? ds.PluggedInHz : ds.BatteryHz;
-                    if (wanted <= 0) continue;
+                    if (wanted <= 0) { retry = true; continue; }   // driver hasn't reported rates yet
 
                     int target = NativeDisplay.Nearest(Rates(d), wanted);
-                    if (displayChange && _applied.TryGetValue(d.Key, out var last) && last.hz == target && last.ac == ac) continue;
-                    _applied[d.Key] = (target, ac);
+                    if (displayChange && _cache.Skip(d.Key, target, ac)) continue;
 
-                    if (d.CurrentHz == target) continue;
-                    string err = NativeDisplay.SetRate(d.DeviceName, target);
-                    if (err != null)
-                        Notify("Couldn't change refresh rate", $"{d.Name}: {target} Hz – {err}", ToolTipIcon.Warning, force: true);
+                    string err = d.CurrentHz == target ? null : NativeDisplay.SetRate(d.DeviceName, target);
+                    if (err == null)
+                    {
+                        _cache.Succeeded(d.Key, target, ac);
+                        if (d.CurrentHz != target)
+                            changed.Add(displays.Count > 1 ? $"{d.Name}: {target} Hz" : $"Refresh rate set to {target} Hz");
+                    }
                     else
-                        changed.Add(displays.Count > 1 ? $"{d.Name}: {target} Hz" : $"Refresh rate set to {target} Hz");
+                    {
+                        int tries = _cache.Failed(d.Key, target, ac);
+                        if (tries < ApplyCache.MaxTries) retry = true;
+                        if (tries == 1 || !displayChange)   // warn once, not on every retry
+                            Notify("Couldn't change refresh rate", $"{d.Name}: {target} Hz – {err}", ToolTipIcon.Warning, force: true);
+                    }
                 }
 
                 if (changed.Count > 0 && (reason == "power change" || reason == "manual" || reason == "enabled"))
                     Notify(AppInfo.StateName(ac), string.Join("\n", changed));
             }
+
+            // Try again shortly for a change the driver refused or rates it hadn't reported yet.
+            // Bounded, and never in place of a pending event (which re-applies anyway).
+            if (!retry) _retries = 0;
+            else if (_retries < ApplyCache.MaxTries && _pendingReason == "") { _retries++; Schedule("retry", 5000); }
 
             UpdateIcon();
             _form?.RefreshState();
@@ -252,7 +297,7 @@ namespace RefreshRateSwitcher
         void UpdateIcon()
         {
             List<DisplayInfo> displays;
-            try { displays = NativeDisplay.GetDisplays(); } catch { displays = new List<DisplayInfo>(); }
+            try { displays = Displays(); } catch { displays = new List<DisplayInfo>(); }
             var main = NativeDisplay.MainDisplay(displays);
             int hz = main?.CurrentHz ?? 0;
             bool ac = OnAC;
@@ -327,6 +372,8 @@ namespace RefreshRateSwitcher
             _debounce.Dispose();
             _showWait.Unregister(null);
             _showEvent.Dispose();
+            _exitWait.Unregister(null);
+            _exitEvent.Dispose();
             _uiInvoker.Dispose();
             _tray.Visible = false;
             _tray.Dispose();
@@ -334,6 +381,54 @@ namespace RefreshRateSwitcher
             (_menu.Tag as Font)?.Dispose();
             _currentIcon?.Dispose();
             base.ExitThreadCore();
+        }
+    }
+
+    /// <summary>
+    /// What Apply() has done per display for the current power state. A display-change event
+    /// (monitor plugged in, resolution changed, or our own change) skips displays already set, so a
+    /// rate the user picks in Windows Settings isn't fought over and a driver that reports a slightly
+    /// different rate can't cause a loop. Only a change that worked counts as set: one the driver
+    /// refused (e.g. mid-dock) is tried again on later events, up to MaxTries times, so a driver that
+    /// keeps refusing can't cause a stream of warnings. A power change or manual change starts afresh.
+    /// </summary>
+    internal sealed class ApplyCache
+    {
+        public const int MaxTries = 3;
+        readonly Dictionary<string, (int hz, bool ac)> _applied = new Dictionary<string, (int, bool)>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, (int hz, bool ac, int tries)> _failed = new Dictionary<string, (int, bool, int)>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>True if a display-change event should leave this display alone.</summary>
+        public bool Skip(string key, int hz, bool ac) =>
+            (_applied.TryGetValue(key, out var a) && a.hz == hz && a.ac == ac) ||
+            (_failed.TryGetValue(key, out var f) && f.hz == hz && f.ac == ac && f.tries >= MaxTries);
+
+        public void Succeeded(string key, int hz, bool ac)
+        {
+            _applied[key] = (hz, ac);
+            _failed.Remove(key);
+        }
+
+        /// <summary>Records a refused change; returns how many times in a row this target has failed.</summary>
+        public int Failed(string key, int hz, bool ac)
+        {
+            int tries = _failed.TryGetValue(key, out var f) && f.hz == hz && f.ac == ac ? f.tries + 1 : 1;
+            _failed[key] = (hz, ac, tries);
+            _applied.Remove(key);
+            return tries;
+        }
+
+        public void KeepOnly(IEnumerable<string> connectedKeys)
+        {
+            var keep = new HashSet<string>(connectedKeys, StringComparer.OrdinalIgnoreCase);
+            foreach (var k in _applied.Keys.Where(k => !keep.Contains(k)).ToList()) _applied.Remove(k);
+            foreach (var k in _failed.Keys.Where(k => !keep.Contains(k)).ToList()) _failed.Remove(k);
+        }
+
+        public void Clear()
+        {
+            _applied.Clear();
+            _failed.Clear();
         }
     }
 

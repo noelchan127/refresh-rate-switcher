@@ -192,6 +192,29 @@ Install $setup | Out-Null
 Check ($null -ne (RunValue)) 'reinstall keeps the earlier choice (still on)'
 Uninstall
 
+# ------------------------------------------------------------------ 5b. setup closes only the installed copy
+Write-Host "`n== Setup closes only the installed copy"
+Install $setup | Out-Null
+# An unrelated program that happens to have the same file name (a renamed copy of ping)
+$decoyDir = Join-Path $env:RUNNER_TEMP 'decoy'
+New-Item -ItemType Directory -Force $decoyDir | Out-Null
+Copy-Item "$env:WINDIR\System32\PING.EXE" (Join-Path $decoyDir $exeName) -Force
+$decoy = Start-Process (Join-Path $decoyDir $exeName) -ArgumentList '-n', '600', '127.0.0.1' -WindowStyle Hidden -PassThru
+Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 5
+function InstalledProcs { @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $installedExe }) }
+Check ((InstalledProcs).Count -eq 1) 'installed app running before reinstall'
+Check ((Install $setup) -eq 0) 'reinstall over a running app: exit code 0'
+Check ((InstalledProcs).Count -eq 0) 'reinstall asked the running app to exit'
+$decoy.Refresh(); Check (-not $decoy.HasExited) 'unrelated program with the same file name still running after reinstall'
+Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 5
+Start-Process "$installDir\Uninstall.exe" -ArgumentList '/S' -Wait
+for ($i = 0; $i -lt 60 -and (Test-Path $uninstKey); $i++) { Start-Sleep -Milliseconds 500 }
+Start-Sleep 1
+Check (-not (Test-Path $installDir)) 'uninstall over a running app removes the install folder'
+$decoy.Refresh(); Check (-not $decoy.HasExited) 'unrelated program with the same file name still running after uninstall'
+Stop-Process -Id $decoy.Id -Force -ErrorAction SilentlyContinue
+Uninstall
+
 # ------------------------------------------------------------------ 6. upgrade from the previous release
 Write-Host "`n== Upgrade from 1.1.3"
 $old = Join-Path $env:RUNNER_TEMP 'old'
@@ -202,14 +225,15 @@ try {
   Install $oldSetup.FullName | Out-Null
   Start-Process $installedExe; Start-Sleep 6           # 1.1.3 first run: saves settings, adds startup entry
   Note ('1.1.3 for comparison: ' + (Usage (AppProcs)[0]))
-  StopApp
+  # 1.1.3 is left running: it predates the exit signal, so setup has to stop it by its exact path
   Note "1.1.3 startup entry: $(RunValue)"
   $legacy = Get-ItemProperty $settingsKey
   Note "1.1.3 settings: $($legacy.PluggedInHz)/$($legacy.BatteryHz) Hz, display $($legacy.Display)"
   Set-ItemProperty $settingsKey PluggedInHz 61   # recognisable values to check the migration
   Set-ItemProperty $settingsKey BatteryHz 59
 
-  Install $setup | Out-Null
+  Check ((Install $setup) -eq 0) 'upgrade over a running 1.1.3: exit code 0'
+  Check ((AppProcs).Count -eq 0) 'upgrade stopped the running 1.1.3'
   Check ((RunValue) -eq "`"$installedExe`" --background") 'upgrade updates the startup entry to tray-only'
   Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 6; StopApp
   $migrated = @(Get-ChildItem "$settingsKey\Displays" | ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.Managed -eq 1 })

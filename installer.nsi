@@ -107,15 +107,85 @@ Function OptionsPageLeave
   ${EndIf}
 FunctionEnd
 
-!macro StopApp
-  ; Close a running copy so files can be replaced / removed
-  nsExec::Exec 'taskkill /F /IM "${EXENAME}"'
-  Pop $0
-  Sleep 700
+; ---------------------------------------------------------------- closing a running copy
+; Only the copy installed in $INSTDIR matters: its file must be free to replace or remove it.
+; Other programs that happen to use the same file name, and copies run from elsewhere, are left alone.
+;  1. If the installed exe is in use, ask the app to exit (1.2.2+ listens for this signal) and wait.
+;  2. Still in use (1.2.1 or older, or the app is stuck): stop only the process running from that exact path.
+;  3. Still in use: ask the user to close it (Retry / Cancel), or fail a silent install with exit code 2.
+!define EXITEVENT "Local\RefreshRateSwitcher_Exit"   ; must match TrayApp.ExitEventName
+
+; $R9 = 1 if "$INSTDIR\${EXENAME}" exists and can't be opened for writing (i.e. it's running)
+!macro ExeInUse
+  StrCpy $R9 0
+  ${If} ${FileExists} "$INSTDIR\${EXENAME}"
+    ClearErrors
+    FileOpen $R8 "$INSTDIR\${EXENAME}" a
+    ${If} ${Errors}
+      StrCpy $R9 1
+    ${Else}
+      FileClose $R8
+    ${EndIf}
+  ${EndIf}
 !macroend
 
+; Wait up to 5 seconds for the installed exe to be free
+!macro WaitExeFree
+  StrCpy $R7 0
+  ${Do}
+    !insertmacro ExeInUse
+    ${If} $R9 == 0
+    ${OrIf} $R7 >= 50
+      ${Break}
+    ${EndIf}
+    Sleep 100
+    IntOp $R7 $R7 + 1
+  ${Loop}
+!macroend
+
+!macro StopAppFunction UN
+Function ${UN}StopApp
+  !insertmacro ExeInUse
+  ${If} $R9 == 0
+    Return
+  ${EndIf}
+
+  System::Call 'kernel32::OpenEventW(i 0x0002, i 0, t "${EXITEVENT}") p .R6'   ; EVENT_MODIFY_STATE
+  ${If} $R6 P<> 0
+    System::Call 'kernel32::SetEvent(p R6)'
+    System::Call 'kernel32::CloseHandle(p R6)'
+    !insertmacro WaitExeFree
+  ${EndIf}
+
+  ${If} $R9 == 1
+    ; The path goes through an environment variable so no quoting can break the command
+    System::Call 'kernel32::SetEnvironmentVariableW(t "RRS_INSTALLED_EXE", t "$INSTDIR\${EXENAME}")'
+    StrCpy $R5 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"   ; 64-bit PowerShell from this 32-bit setup
+    ${IfNot} ${FileExists} $R5
+      StrCpy $R5 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+    ${EndIf}
+    nsExec::Exec `"$R5" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -eq $$env:RRS_INSTALLED_EXE } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }"`
+    Pop $R4
+    !insertmacro WaitExeFree
+  ${EndIf}
+
+  ${DoWhile} $R9 == 1
+    ${If} ${Silent}
+      SetErrorLevel 2
+      DetailPrint "${APPNAME} is still running and couldn't be closed."
+      Abort
+    ${EndIf}
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${APPNAME} is still running.$\r$\n$\r$\nClose it from its tray icon (right-click, then Exit), then click Retry." IDRETRY +2
+      Abort
+    !insertmacro WaitExeFree
+  ${Loop}
+FunctionEnd
+!macroend
+!insertmacro StopAppFunction ""
+!insertmacro StopAppFunction "un."
+
 Section "Install"
-  !insertmacro StopApp
+  Call StopApp
 
   SetOutPath "$INSTDIR"
   File "${BINDIR}\${EXENAME}"
@@ -149,7 +219,7 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
-  !insertmacro StopApp
+  Call un.StopApp
 
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
   Delete "$INSTDIR\${EXENAME}"
