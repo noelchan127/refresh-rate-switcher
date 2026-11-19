@@ -27,6 +27,8 @@ namespace RefreshRateSwitcher
         SettingsForm _form;
 
         readonly ApplyCache _cache = new ApplyCache();
+        readonly DisplayCache _displayCache;
+        (int hz, int argb, int size) _iconDrawn;   // what the tray icon currently shows
         int _retries;   // follow-up passes scheduled for failed changes or rates not reported yet
 
         // Power source the rates were last applied for. Battery-percentage notifications arrive as
@@ -48,6 +50,12 @@ namespace RefreshRateSwitcher
         {
             _settings = Settings.Load();
             bool firstRun = _settings.FirstRun;
+            _displayCache = new DisplayCache(() =>
+            {
+                var list = NativeDisplay.GetDisplays();
+                if (_settings.BindKeys(list)) Save();
+                return list;
+            }, d => NativeDisplay.GetSupportedRates(d.DeviceName));
 
             _menu = new ContextMenuStrip();
             _menu.Opening += (s, e) => TrayMenu.Build(_menu, this);
@@ -94,14 +102,9 @@ namespace RefreshRateSwitcher
         // Unknown (e.g. desktops without a battery) is treated as plugged in
         public bool OnAC => SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Offline;
 
-        /// <summary>Connected displays, each keyed to the settings it was saved under.</summary>
-        public List<DisplayInfo> Displays()
-        {
-            var list = NativeDisplay.GetDisplays();
-            if (_settings.BindKeys(list)) Save();
-            return list;
-        }
-        public List<int> Rates(DisplayInfo d) => NativeDisplay.GetSupportedRates(d.DeviceName);
+        /// <summary>Connected displays, each keyed to the settings it was saved under (shared: read-only).</summary>
+        public List<DisplayInfo> Displays() => _displayCache.Displays();
+        public List<int> Rates(DisplayInfo d) => _displayCache.Rates(d);
 
         public void SetEnabled(bool on)
         {
@@ -179,11 +182,12 @@ namespace RefreshRateSwitcher
             // StatusChange fires for AC/DC changes and also battery % changes: Apply() checks which.
             // Resume: some drivers reset the mode after sleep, so re-apply after a short delay.
             if (e.Mode == PowerModes.StatusChange) Schedule("power status", 1500);
-            else if (e.Mode == PowerModes.Resume) Schedule("resume", 4000);
+            else if (e.Mode == PowerModes.Resume) { _displayCache.Invalidate(); Schedule("resume", 4000); }
         }
 
         void OnDisplaySettingsChanged(object sender, EventArgs e)
         {
+            _displayCache.Invalidate();
             UpdateIcon();
             _form?.RefreshState();
             Schedule("display change", 2000);
@@ -248,7 +252,12 @@ namespace RefreshRateSwitcher
                     int target = NativeDisplay.Nearest(Rates(d), wanted);
                     if (displayChange && _cache.Skip(d.Key, target, ac)) continue;
 
-                    string err = d.CurrentHz == target ? null : NativeDisplay.SetRate(d.DeviceName, target);
+                    string err = null;
+                    if (d.CurrentHz != target)
+                    {
+                        err = NativeDisplay.SetRate(d.DeviceName, target);
+                        _displayCache.InvalidateDisplays();   // the icon and window should show the new rate
+                    }
                     if (err == null)
                     {
                         _cache.Succeeded(d.Key, target, ac);
@@ -307,6 +316,29 @@ namespace RefreshRateSwitcher
                           : Color.FromArgb(220, 130, 20);     // amber = battery
 
             int size = Math.Max(16, SystemInformation.SmallIconSize.Width);
+            var look = (hz, bg.ToArgb(), size);
+            if (_currentIcon == null || look != _iconDrawn)   // redraw only when what it shows changes
+            {
+                _iconDrawn = look;
+                DrawIcon(hz, bg, size);
+            }
+
+            string second;
+            if (!_settings.Enabled) second = "Auto-switch off";
+            else if (displays.Count > 1)
+                second = $"Auto-switch on · {displays.Count(d => _settings.Get(d.Key)?.Managed == true)} of {displays.Count} displays";
+            else
+            {
+                var ds = main != null ? _settings.Get(main.Key) : null;
+                second = ds == null || !ds.Managed ? "Display not switched"
+                       : $"Auto: {ds.PluggedInHz} Hz AC / {ds.BatteryHz} Hz battery";
+            }
+            string tip = $"{hz} Hz · {AppInfo.StateName(ac)}\n{second}";
+            _tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;   // .NET Framework limit
+        }
+
+        void DrawIcon(int hz, Color bg, int size)
+        {
             using (var bmp = new Bitmap(size, size))
             using (var g = Graphics.FromImage(bmp))
             {
@@ -335,19 +367,6 @@ namespace RefreshRateSwitcher
                 _currentIcon?.Dispose();
                 _currentIcon = newIcon;
             }
-
-            string second;
-            if (!_settings.Enabled) second = "Auto-switch off";
-            else if (displays.Count > 1)
-                second = $"Auto-switch on · {displays.Count(d => _settings.Get(d.Key)?.Managed == true)} of {displays.Count} displays";
-            else
-            {
-                var ds = main != null ? _settings.Get(main.Key) : null;
-                second = ds == null || !ds.Managed ? "Display not switched"
-                       : $"Auto: {ds.PluggedInHz} Hz AC / {ds.BatteryHz} Hz battery";
-            }
-            string tip = $"{hz} Hz · {AppInfo.StateName(ac)}\n{second}";
-            _tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;   // .NET Framework limit
         }
 
         static GraphicsPath RoundRect(RectangleF r, float rad)

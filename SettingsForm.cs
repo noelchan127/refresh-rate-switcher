@@ -321,8 +321,10 @@ namespace RefreshRateSwitcher
         public void RefreshState()
         {
             if (IsDisposed) return;
-            var keys = _host.Displays().Select(d => d.Key).ToList();
-            bool sameDisplays = keys.Count == _rows.Count && keys.All(_rows.ContainsKey);
+            var displays = _host.Displays();
+            bool sameDisplays = displays.Count == _rows.Count && displays.All(d => _rows.ContainsKey(d.Key)) &&
+                                // a driver that had no rates when the window opened has reported them since
+                                !displays.Any(d => _rows[d.Key].AC.Items.Count == 0 && _host.Rates(d).Count > 0);
             if (!sameDisplays)
             {
                 SuspendLayout();
