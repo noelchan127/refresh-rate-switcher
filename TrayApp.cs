@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
@@ -15,7 +16,7 @@ using Microsoft.Win32;
 
 namespace RefreshRateSwitcher
 {
-    internal sealed class TrayApp : ApplicationContext
+    internal sealed class TrayApp : ApplicationContext, IAppHost
     {
         readonly NotifyIcon _tray;
         readonly ContextMenuStrip _menu;
@@ -23,77 +24,134 @@ namespace RefreshRateSwitcher
         readonly System.Windows.Forms.Timer _debounce;
         string _pendingReason = "";
         Icon _currentIcon;
+        SettingsForm _form;
 
+        // Rate last applied to each display for the current power state. A display-change event
+        // (monitor plugged in, resolution changed, or our own change) only touches displays not in
+        // here, so a rate the user picks in Windows Settings isn't fought over, and a driver that
+        // reports a slightly different rate can't cause a loop.
+        readonly Dictionary<string, (int hz, bool ac)> _applied = new Dictionary<string, (int, bool)>(StringComparer.OrdinalIgnoreCase);
+
+        // Signalled by a second launch (e.g. Start Menu shortcut) to open this instance's window
         public const string ShowMenuEventName = @"Local\RefreshRateSwitcher_ShowMenu";
-        readonly EventWaitHandle _showMenuEvent;
-        readonly RegisteredWaitHandle _showMenuWait;
+        readonly EventWaitHandle _showEvent;
+        readonly RegisteredWaitHandle _showWait;
         readonly Control _uiInvoker = new Control();
 
-        public TrayApp()
+        public TrayApp(bool background)
         {
             _settings = Settings.Load();
+            bool firstRun = _settings.FirstRun;
 
             _menu = new ContextMenuStrip();
-            _menu.Opening += (s, e) => BuildMenu();
+            _menu.Opening += (s, e) => TrayMenu.Build(_menu, this);
 
-            _tray = new NotifyIcon { ContextMenuStrip = _menu, Visible = true, Text = "Refresh Rate Switcher" };
-            _tray.MouseUp += (s, e) =>
-            {
-                // Left-click opens the same menu as right-click
-                if (e.Button == MouseButtons.Left) ShowMenu();
-            };
+            _tray = new NotifyIcon { ContextMenuStrip = _menu, Visible = true, Text = AppInfo.Name };
+            _tray.MouseUp += (s, e) => { if (e.Button == MouseButtons.Left) ShowMenu(); };   // left-click = same menu
+            _tray.BalloonTipClicked += (s, e) => OpenSettings();
 
-            // Lets a second launch (Start Menu shortcut) open this instance's menu
             _uiInvoker.CreateControl();
-            _showMenuEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowMenuEventName);
-            _showMenuWait = ThreadPool.RegisterWaitForSingleObject(_showMenuEvent, (st, timedOut) =>
+            _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowMenuEventName);
+            _showWait = ThreadPool.RegisterWaitForSingleObject(_showEvent, (st, timedOut) =>
             {
-                try { _uiInvoker.BeginInvoke((Action)ShowMenu); } catch { }
+                try { _uiInvoker.BeginInvoke((Action)(() => OpenSettings())); } catch { }
             }, null, Timeout.Infinite, false);
 
             _debounce = new System.Windows.Forms.Timer();
-            _debounce.Tick += (s, e) => { _debounce.Stop(); Apply(_pendingReason); };
+            _debounce.Tick += (s, e) => { _debounce.Stop(); var r = _pendingReason; _pendingReason = ""; Apply(r); };
 
-            if (_settings.FirstRun) InitDefaults();
-            // If the exe was moved, repoint the existing startup entry at the new location
-            try { if (Settings.StartupEntryStale) Settings.StartupEnabled = true; } catch { }
+            // Fix an out-of-date startup entry (exe moved, or written by 1.1.x without --background).
+            // Never creates one: whether to start with Windows is chosen in the installer or the app.
+            try { if (Settings.StartupEntryNeedsRepair) Settings.StartupEnabled = true; } catch { }
 
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
             Apply("startup");
-            UpdateIcon();
+            if (firstRun) _settings.Save();
+
+            if (!background) OpenSettings();
+            else if (firstRun)
+                Notify(AppInfo.Name + " is running", "Click the tray icon to change refresh rates.");
         }
 
-        // ------------------------------------------------------------------ state
+        // ------------------------------------------------------------------ IAppHost
 
-        static bool OnAC
+        public Settings Settings => _settings;
+
+        // Unknown (e.g. desktops without a battery) is treated as plugged in
+        public bool OnAC => SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Offline;
+
+        public List<DisplayInfo> Displays() => NativeDisplay.GetDisplays();
+        public List<int> Rates(DisplayInfo d) => NativeDisplay.GetSupportedRates(d.DeviceName);
+
+        public void SetEnabled(bool on)
         {
-            get
+            _settings.Enabled = on;
+            Save();
+            Apply("enabled");
+        }
+
+        public void SetManaged(string key, bool on)
+        {
+            var ds = _settings.Get(key);
+            if (ds == null) return;
+            ds.Managed = on;
+            Save();
+            Apply("manual");
+        }
+
+        public void SetRate(string key, bool forAC, int hz)
+        {
+            var ds = _settings.Get(key);
+            if (ds == null) return;
+            if (forAC) ds.PluggedInHz = hz; else ds.BatteryHz = hz;
+            Save();
+            Apply("manual");
+        }
+
+        public void SetNotifications(bool on)
+        {
+            _settings.Notifications = on;
+            Save();
+        }
+
+        public bool StartupEnabled
+        {
+            get => Settings.StartupEnabled;
+            set
             {
-                // Unknown (e.g. desktops without a battery) is treated as plugged in
-                return SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Offline;
+                try { Settings.StartupEnabled = value; }
+                catch (Exception ex) { Notify("Couldn't change startup setting", ex.Message, ToolTipIcon.Warning, force: true); }
             }
         }
 
-        static string StateName(bool ac) => ac ? "Plugged in" : "On battery";
-
-        void InitDefaults()
+        public void OpenSettings(bool about = false)
         {
-            var d = NativeDisplay.Resolve(_settings.Display);
-            if (d != null)
+            if (_form == null || _form.IsDisposed)
             {
-                var rates = NativeDisplay.GetSupportedRates(d.DeviceName);
-                if (rates.Count > 0)
+                _form = new SettingsForm(this, about);
+                _form.FormClosed += (s, e) =>
                 {
-                    _settings.PluggedInHz = rates.Max();
-                    _settings.BatteryHz = rates.Contains(60) ? 60 : rates.Min();
-                }
+                    _form = null;   // a closed modeless form disposes itself
+                    try { _uiInvoker.BeginInvoke((Action)MemoryTrim.AfterWindowClosed); } catch { }
+                };
+                _form.Show();
             }
-            _settings.Save();
-            try { Settings.StartupEnabled = true; } catch { }
-            Notify("Refresh Rate Switcher is running",
-                   $"Plugged in: {_settings.PluggedInHz} Hz, on battery: {_settings.BatteryHz} Hz.\nClick the tray icon to change.");
+            else
+            {
+                _form.ShowAbout(about);
+                if (_form.WindowState == FormWindowState.Minimized) _form.WindowState = FormWindowState.Normal;
+                _form.Activate();
+            }
+        }
+
+        public void Exit() => ExitThread();
+
+        void Save()
+        {
+            try { _settings.Save(); }
+            catch (Exception ex) { Notify("Couldn't save settings", ex.Message, ToolTipIcon.Warning, force: true); }
         }
 
         // ------------------------------------------------------------------ events
@@ -106,10 +164,17 @@ namespace RefreshRateSwitcher
             else if (e.Mode == PowerModes.Resume) Schedule("resume", 4000);
         }
 
-        void OnDisplaySettingsChanged(object sender, EventArgs e) => UpdateIcon();
+        void OnDisplaySettingsChanged(object sender, EventArgs e)
+        {
+            UpdateIcon();
+            _form?.RefreshState();
+            Schedule("display change", 2000);
+        }
 
         void Schedule(string reason, int ms)
         {
+            // A pending power/resume re-apply outranks a display-change one
+            if (reason == "display change" && _pendingReason != "" && _pendingReason != "display change") return;
             _pendingReason = reason;
             _debounce.Stop();
             _debounce.Interval = ms;
@@ -120,125 +185,57 @@ namespace RefreshRateSwitcher
 
         void Apply(string reason)
         {
-            if (!_settings.Enabled) { UpdateIcon(); return; }
+            List<DisplayInfo> displays;
+            try { displays = NativeDisplay.GetDisplays(); }
+            catch { return; }
 
-            var display = NativeDisplay.Resolve(_settings.Display);
-            if (display == null) return;
+            if (_settings.EnsureDisplays(displays, Rates)) Save();
 
-            bool ac = OnAC;
-            int wanted = ac ? _settings.PluggedInHz : _settings.BatteryHz;
-            if (wanted <= 0) { UpdateIcon(); return; }
-
-            var rates = NativeDisplay.GetSupportedRates(display.DeviceName);
-            int target = NativeDisplay.Nearest(rates, wanted);
-            int before = NativeDisplay.GetCurrentRate(display.DeviceName);
-
-            if (before != target)
+            bool displayChange = reason == "display change";
+            if (displayChange)
             {
-                string err = NativeDisplay.SetRate(display.DeviceName, target);
-                if (err != null)
-                    Notify("Couldn't change refresh rate", $"{target} Hz on {display.DeviceName.Replace(@"\\.\", "")}: {err}", ToolTipIcon.Warning, force: true);
-                else if (reason != "startup" && reason != "resume")
-                    Notify(StateName(ac), $"Refresh rate set to {target} Hz");
+                // Forget unplugged monitors so they're set again when reconnected
+                var connected = new HashSet<string>(displays.Select(d => d.Key), StringComparer.OrdinalIgnoreCase);
+                foreach (var k in _applied.Keys.Where(k => !connected.Contains(k)).ToList()) _applied.Remove(k);
             }
+            else
+                _applied.Clear();
+
+            var changed = new List<string>();
+            if (_settings.Enabled)
+            {
+                bool ac = OnAC;
+                foreach (var d in displays)
+                {
+                    var ds = _settings.Get(d.Key);
+                    if (ds == null || !ds.Managed) continue;
+                    int wanted = ac ? ds.PluggedInHz : ds.BatteryHz;
+                    if (wanted <= 0) continue;
+
+                    int target = NativeDisplay.Nearest(Rates(d), wanted);
+                    if (displayChange && _applied.TryGetValue(d.Key, out var last) && last.hz == target && last.ac == ac) continue;
+                    _applied[d.Key] = (target, ac);
+
+                    if (d.CurrentHz == target) continue;
+                    string err = NativeDisplay.SetRate(d.DeviceName, target);
+                    if (err != null)
+                        Notify("Couldn't change refresh rate", $"{d.Name}: {target} Hz – {err}", ToolTipIcon.Warning, force: true);
+                    else
+                        changed.Add(displays.Count > 1 ? $"{d.Name}: {target} Hz" : $"Refresh rate set to {target} Hz");
+                }
+
+                if (changed.Count > 0 && (reason == "power change" || reason == "manual" || reason == "enabled"))
+                    Notify(AppInfo.StateName(ac), string.Join("\n", changed));
+            }
+
             UpdateIcon();
+            _form?.RefreshState();
         }
 
         void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false)
         {
             if (!_settings.Notifications && !force) return;
             _tray.ShowBalloonTip(3000, title, text, icon);
-        }
-
-        // ------------------------------------------------------------------ menu
-
-        void BuildMenu()
-        {
-            _menu.Items.Clear();
-            var display = NativeDisplay.Resolve(_settings.Display);
-            var rates = display != null ? NativeDisplay.GetSupportedRates(display.DeviceName) : new System.Collections.Generic.List<int>();
-            int current = display != null ? NativeDisplay.GetCurrentRate(display.DeviceName) : 0;
-            bool ac = OnAC;
-
-            var header = new ToolStripMenuItem($"{StateName(ac)} · now {current} Hz") { Enabled = false };
-            _menu.Items.Add(header);
-            _menu.Items.Add(new ToolStripSeparator());
-
-            var enabled = new ToolStripMenuItem("Auto-switch enabled") { Checked = _settings.Enabled, CheckOnClick = false };
-            enabled.Click += (s, e) =>
-            {
-                _settings.Enabled = !_settings.Enabled;
-                _settings.Save();
-                if (_settings.Enabled) Apply("enabled"); else UpdateIcon();
-            };
-            _menu.Items.Add(enabled);
-
-            _menu.Items.Add(RateMenu("Plugged in", true, rates, current, ac));
-            _menu.Items.Add(RateMenu("On battery", false, rates, current, ac));
-
-            _menu.Items.Add(new ToolStripSeparator());
-
-            // Display selection
-            var dispMenu = new ToolStripMenuItem("Display");
-            var displays = NativeDisplay.GetDisplays();
-            var autoTarget = NativeDisplay.Resolve("auto");
-            var autoItem = new ToolStripMenuItem("Automatic" + (autoTarget != null ? $" ({autoTarget.DeviceName.Replace(@"\\.\", "")})" : ""))
-            { Checked = _settings.Display == "auto" };
-            autoItem.Click += (s, e) => { _settings.Display = "auto"; _settings.Save(); Apply("display"); };
-            dispMenu.DropDownItems.Add(autoItem);
-            dispMenu.DropDownItems.Add(new ToolStripSeparator());
-            foreach (var d in displays)
-            {
-                var name = d.DeviceName;
-                var it = new ToolStripMenuItem(d.Label) { Checked = _settings.Display == name };
-                it.Click += (s, e) => { _settings.Display = name; _settings.Save(); Apply("display"); };
-                dispMenu.DropDownItems.Add(it);
-            }
-            _menu.Items.Add(dispMenu);
-
-            bool startup = false;
-            try { startup = Settings.StartupEnabled; } catch { }
-            var startItem = new ToolStripMenuItem("Start with Windows") { Checked = startup };
-            startItem.Click += (s, e) =>
-            {
-                try { Settings.StartupEnabled = !startup; }
-                catch (Exception ex) { Notify("Couldn't change startup setting", ex.Message, ToolTipIcon.Warning, true); }
-            };
-            _menu.Items.Add(startItem);
-
-            var notifItem = new ToolStripMenuItem("Show notifications") { Checked = _settings.Notifications };
-            notifItem.Click += (s, e) => { _settings.Notifications = !_settings.Notifications; _settings.Save(); };
-            _menu.Items.Add(notifItem);
-
-            _menu.Items.Add(new ToolStripSeparator());
-            var exit = new ToolStripMenuItem("Exit");
-            exit.Click += (s, e) => ExitThread();
-            _menu.Items.Add(exit);
-        }
-
-        ToolStripMenuItem RateMenu(string title, bool forAC, System.Collections.Generic.List<int> rates, int current, bool onAC)
-        {
-            int chosen = forAC ? _settings.PluggedInHz : _settings.BatteryHz;
-            int effective = NativeDisplay.Nearest(rates, chosen);
-            var m = new ToolStripMenuItem($"{title}: {(chosen > 0 ? effective + " Hz" : "not set")}");
-            if (forAC == onAC) m.Font = new Font(m.Font, FontStyle.Bold);   // highlight the active state
-
-            if (rates.Count == 0)
-                m.DropDownItems.Add(new ToolStripMenuItem("No rates reported by driver") { Enabled = false });
-
-            foreach (int hz in rates.OrderByDescending(r => r))
-            {
-                int value = hz;
-                var it = new ToolStripMenuItem($"{hz} Hz" + (hz == current ? "   (current)" : "")) { Checked = hz == effective && chosen > 0 };
-                it.Click += (s, e) =>
-                {
-                    if (forAC) _settings.PluggedInHz = value; else _settings.BatteryHz = value;
-                    _settings.Save();
-                    if (forAC == OnAC) Apply("manual");
-                };
-                m.DropDownItems.Add(it);
-            }
-            return m;
         }
 
         void ShowMenu()
@@ -254,8 +251,10 @@ namespace RefreshRateSwitcher
 
         void UpdateIcon()
         {
-            var display = NativeDisplay.Resolve(_settings.Display);
-            int hz = display != null ? NativeDisplay.GetCurrentRate(display.DeviceName) : 0;
+            List<DisplayInfo> displays;
+            try { displays = NativeDisplay.GetDisplays(); } catch { displays = new List<DisplayInfo>(); }
+            var main = NativeDisplay.MainDisplay(displays);
+            int hz = main?.CurrentHz ?? 0;
             bool ac = OnAC;
 
             Color bg = !_settings.Enabled ? Color.FromArgb(110, 110, 110)
@@ -277,9 +276,8 @@ namespace RefreshRateSwitcher
                 float fontPx = size * (text.Length >= 3 ? 0.56f : 0.72f);
                 using (var f = new Font("Segoe UI", fontPx, FontStyle.Bold, GraphicsUnit.Pixel))
                 {
-                    // shrink until it fits
                     var sz = g.MeasureString(text, f, PointF.Empty, StringFormat.GenericTypographic);
-                    float scale = Math.Min(1f, (size * 0.96f) / sz.Width);
+                    float scale = Math.Min(1f, (size * 0.96f) / sz.Width);   // shrink until it fits
                     using (var f2 = new Font("Segoe UI", fontPx * scale, FontStyle.Bold, GraphicsUnit.Pixel))
                     using (var sf = new StringFormat(StringFormat.GenericTypographic) { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
                         g.DrawString(text, f2, Brushes.White, new RectangleF(0, 0, size, size + 1), sf);
@@ -293,9 +291,18 @@ namespace RefreshRateSwitcher
                 _currentIcon = newIcon;
             }
 
-            string tip = $"{hz} Hz · {StateName(ac)}\n" +
-                         (_settings.Enabled ? $"Auto: {_settings.PluggedInHz} Hz AC / {_settings.BatteryHz} Hz battery" : "Auto-switch disabled");
-            _tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;   // NotifyIcon limit
+            string second;
+            if (!_settings.Enabled) second = "Auto-switch off";
+            else if (displays.Count > 1)
+                second = $"Auto-switch on · {displays.Count(d => _settings.Get(d.Key)?.Managed == true)} of {displays.Count} displays";
+            else
+            {
+                var ds = main != null ? _settings.Get(main.Key) : null;
+                second = ds == null || !ds.Managed ? "Display not switched"
+                       : $"Auto: {ds.PluggedInHz} Hz AC / {ds.BatteryHz} Hz battery";
+            }
+            string tip = $"{hz} Hz · {AppInfo.StateName(ac)}\n{second}";
+            _tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;   // .NET Framework limit
         }
 
         static GraphicsPath RoundRect(RectangleF r, float rad)
@@ -316,14 +323,39 @@ namespace RefreshRateSwitcher
         {
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            _form?.Close();
             _debounce.Dispose();
-            _showMenuWait.Unregister(null);
-            _showMenuEvent.Dispose();
+            _showWait.Unregister(null);
+            _showEvent.Dispose();
             _uiInvoker.Dispose();
             _tray.Visible = false;
             _tray.Dispose();
+            _menu.Dispose();
+            (_menu.Tag as Font)?.Dispose();
             _currentIcon?.Dispose();
             base.ExitThreadCore();
+        }
+    }
+
+    internal static class MemoryTrim
+    {
+        [DllImport("kernel32.dll")] static extern bool SetProcessWorkingSetSize(IntPtr process, IntPtr min, IntPtr max);
+
+        /// <summary>
+        /// The settings window uses a few MB while open. After it closes, free that memory
+        /// so the app returns to its small tray-only footprint.
+        /// </summary>
+        public static void AfterWindowClosed()
+        {
+            try
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                using (var p = System.Diagnostics.Process.GetCurrentProcess())
+                    SetProcessWorkingSetSize(p.Handle, (IntPtr)(-1), (IntPtr)(-1));
+            }
+            catch { }
         }
     }
 }
