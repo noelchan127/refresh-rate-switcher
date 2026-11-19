@@ -50,6 +50,7 @@ namespace RefreshRateSwitcher
                 ("Settings & migration", d => SettingsTests()),
                 ("Display identity & late rates", d => IdentityTests()),
                 ("Power events & retries", d => EventTests()),
+                ("Display cache", d => CacheTests()),
                 ("Tray menu", d => MenuTests()),
                 ("Settings window", WindowTests),
             };
@@ -91,6 +92,27 @@ namespace RefreshRateSwitcher
                 Check(NativeDisplay.SetRate(d.DeviceName, d.CurrentHz) == null, $"{d.ShortDeviceName} SetRate to the current rate is a no-op");
             }
             Check(NativeDisplay.MainDisplay(displays) != null, "a main display is chosen for the tray icon");
+
+            // What one display change cost before and after DisplayCache: before, the tray icon, the
+            // settings window and the re-apply listed the displays 7 times and each rate list 3 times
+            const int listings = 7, rateLists = 3, rounds = 5;
+            sw.Restart();
+            for (int n = 0; n < rounds; n++)
+            {
+                for (int i = 0; i < listings; i++) NativeDisplay.GetDisplays();
+                for (int i = 0; i < rateLists; i++) foreach (var d in displays) NativeDisplay.GetSupportedRates(d.DeviceName);
+            }
+            double before = sw.Elapsed.TotalMilliseconds / rounds;
+            sw.Restart();
+            for (int n = 0; n < rounds; n++)
+            {
+                var cache = new DisplayCache(NativeDisplay.GetDisplays, d => NativeDisplay.GetSupportedRates(d.DeviceName));
+                for (int i = 0; i < listings; i++) cache.Displays();
+                for (int i = 0; i < rateLists; i++) foreach (var d in displays) cache.Rates(d);
+            }
+            double after = sw.Elapsed.TotalMilliseconds / rounds;
+            Info($"queries for one display change: {before:F1} ms uncached, {after:F1} ms with DisplayCache");
+            Check(after <= before, "display cache doesn't make a display change slower");
         }
 
         // ------------------------------------------------------------------ simulated setups
@@ -320,6 +342,39 @@ namespace RefreshRateSwitcher
                 try { Registry.CurrentUser.DeleteSubKeyTree(Settings.KeyPath, false); } catch { }
                 Settings.KeyPath = original;
             }
+        }
+
+        static void CacheTests()
+        {
+            int listed = 0, rateQueries = 0, clock = 1000;
+            var reported = new List<int>();   // what the "driver" reports; empty at first
+            var cache = new DisplayCache(() => { listed++; return Laptop(); },
+                                         d => { rateQueries++; return new List<int>(reported); },
+                                         () => clock);
+            var a = cache.Displays(); cache.Displays(); cache.Displays();
+            Check(listed == 1 && ReferenceEquals(a, cache.Displays()), "displays listed once for several uses in one event");
+            clock += DisplayCache.MaxAgeMs;
+            cache.Displays();
+            Check(listed == 2, $"listed again after {DisplayCache.MaxAgeMs} ms, so it can't go stale");
+            cache.Displays(); cache.Invalidate(); cache.Displays();
+            Check(listed == 3, "listed again straight after a display change");
+            cache.InvalidateDisplays(); cache.Displays();
+            Check(listed == 4, "listed again after a rate change (icon shows the new rate)");
+            clock -= 100000; cache.Displays();
+            Check(listed == 5, "clock going backwards doesn't freeze the cache");
+
+            var d0 = a[0];
+            Check(cache.Rates(d0).Count == 0 && cache.Rates(d0).Count == 0 && rateQueries == 2, "no rates reported: asked again every time");
+            reported.AddRange(new[] { 60, 120 });
+            cache.Rates(d0); cache.Rates(d0); cache.Rates(d0);
+            Check(rateQueries == 3 && cache.Rates(d0).Count == 2, "rates reported: asked once, then reused");
+            cache.InvalidateDisplays(); cache.Rates(d0);
+            Check(rateQueries == 3, "a rate change keeps the rate lists");
+            var other = Laptop()[0]; other.Width = 1920; other.Height = 1080;
+            cache.Rates(other);
+            Check(rateQueries == 4, "a different resolution has its own rate list");
+            cache.Invalidate(); cache.Rates(d0);
+            Check(rateQueries == 5, "a display change drops the rate lists");
         }
 
         static void EventTests()
