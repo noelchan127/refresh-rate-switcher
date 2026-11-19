@@ -1,7 +1,16 @@
 Windows tray app that sets the display refresh rate automatically when you plug in or unplug.
 
-### What's new in 1.2.1
-- The publisher and author are now shown as **Noel Chan** in Windows Settings → Apps, the installer and app file properties, and the About window. Nothing else has changed.
+### What's new in 1.2.2
+Fixes only, no new features:
+- **Identical monitors keep their own settings.** Plugging in a second monitor of the same model no longer makes the first one forget its settings, and a lone monitor no longer takes over another one's. Identical monitors are told apart by the port they were last on, so swapping their cables swaps their settings.
+- **Slow display drivers:** if a driver hadn't reported its refresh rates yet (e.g. right after docking or waking), the display stayed unswitched until you picked rates yourself. Its rates are now filled in once the driver reports them, and the settings window shows them too.
+- **A rate you pick in Windows Settings now stays** until you plug in, unplug, or wake the PC. Battery-percentage updates no longer undo it.
+- **Refused changes are retried.** If the driver refuses a change (e.g. while docking), it's tried again a few times instead of being skipped.
+- **Setup closes the app politely.** Setup now asks the running app to exit instead of force-closing every program with the same file name. Only 1.2.1 and older, which don't understand that request, are stopped directly, and only the copy in the install folder.
+- **Quicker when displays change:** each event no longer repeats the same display queries, and the tray icon is only redrawn when it changes.
+
+### New in 1.2.1
+- The publisher and author are now shown as **Noel Chan** in Windows Settings → Apps, the installer and app file properties, and the About window.
 
 ### New in 1.2.0
 - **Multiple displays**: each display has its own plugged-in and battery rates, and can be switched or left alone.
@@ -12,7 +21,7 @@ Windows tray app that sets the display refresh rate automatically when you plug 
 - Upgrading keeps your settings: your 1.1.x rates move to the display they controlled. Other displays start out not switched.
 
 ### Install
-Download **RefreshRateSwitcher-Setup-1.2.1.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
+Download **RefreshRateSwitcher-Setup-1.2.2.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
 
 Windows SmartScreen may warn because the installer isn't code-signed: click **Run anyway** (on some versions of Windows, click **More info** first). Some antivirus products may also flag unsigned installers. The installer is built by GitHub Actions directly from this repository's source and tested on Windows before release.
 
