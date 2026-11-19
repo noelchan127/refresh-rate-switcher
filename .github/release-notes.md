@@ -1,6 +1,9 @@
 Windows tray app that sets the display refresh rate automatically when you plug in or unplug.
 
-### What's new in 1.2.0
+### What's new in 1.2.1
+- The publisher and author are now shown as **Noel Chan** in Windows Settings → Apps, the installer and app file properties, and the About window. Nothing else has changed.
+
+### New in 1.2.0
 - **Multiple displays**: each display has its own plugged-in and battery rates, and can be switched or left alone.
   Settings follow the monitor, even if you plug it into a different port.
 - **Settings window**: open it from the tray menu or the Start Menu. The tray icon and quick menu are still there.
@@ -9,7 +12,7 @@ Windows tray app that sets the display refresh rate automatically when you plug 
 - Upgrading keeps your settings: your 1.1.x rates move to the display they controlled. Other displays start out not switched.
 
 ### Install
-Download **RefreshRateSwitcher-Setup-1.2.0.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
+Download **RefreshRateSwitcher-Setup-1.2.1.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
 
 Windows SmartScreen may warn because the installer isn't code-signed: click **Run anyway** (on some versions of Windows, click **More info** first). Some antivirus products may also flag unsigned installers. The installer is built by GitHub Actions directly from this repository's source and tested on Windows before release.
 
