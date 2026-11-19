@@ -1,9 +1,16 @@
 # Refresh Rate Switcher
 
-Windows tray app that sets the display refresh rate automatically depending on whether
-the laptop is plugged in or on battery. Works with multiple displays, each with its own settings.
+<p align="center"><img src="docs/screenshots/settings-window.png" width="420" alt="Settings window with the built-in display set to 120 Hz plugged in and 60 Hz on battery"></p>
 
-<p align="center"><img src="docs/screenshots/tray-menu.png" width="420" alt="Tray menu with the Plugged in submenu open"></p>
+## About
+High refresh rate laptop screens look smooth but use more battery, and Windows doesn't change the
+refresh rate when you unplug. Refresh Rate Switcher does it for you: choose one rate for when you're
+plugged in and another for when you're on battery, and it switches automatically whenever the power
+source changes. It sits in the system tray, works with multiple displays (each with its own settings),
+and needs no admin rights or internet access.
+
+This is a one-person hobby project I made to fix a personal annoyance. I'll look at issues and suggestions
+when I can, but please forgive me if I'm slow to respond.
 
 ## Install
 Download `RefreshRateSwitcher-Setup-<version>.exe` from the [latest release](../../releases/latest) and run it. It installs per-user (no admin) to
@@ -20,9 +27,12 @@ On first run, the built-in laptop screen is set to switch between its highest ra
 
 ### Security warnings
 The installer and app are **not code-signed**, so Windows may warn you the first time:
-- **SmartScreen** ("Windows protected your PC"): click **More info → Run anyway**.
+- **SmartScreen** ("Windows protected your PC"): click **Run anyway**. On some versions of Windows,
+  click **More info** first.
 - **Antivirus**: some products may flag unsigned installers like this one, partly because setup closes a
-  running copy of the app before upgrading. This is a false positive.
+  running copy of the app before upgrading.
+
+<p align="center"><img src="docs/screenshots/smartscreen.png" width="420" alt="Windows SmartScreen warning for RefreshRateSwitcher-Setup with a Run anyway button"></p>
 
 Every release is built by [GitHub Actions](../../actions/workflows/release.yml) directly from the source in
 this repository, so you can see exactly what went into it. If you'd rather not trust a pre-built binary,
@@ -34,9 +44,12 @@ Hover over it to see both settings.
 
 | Plugged in | On battery | Tooltip |
 |:---:|:---:|:---:|
-| <img src="docs/screenshots/tray-icon-plugged-in.png" width="150" alt="Blue 120 Hz tray icon"> | <img src="docs/screenshots/tray-icon-battery.png" width="190" alt="Amber 60 Hz tray icon"> | <img src="docs/screenshots/tooltip.png" width="300" alt="Tooltip showing current rate and settings"> |
+| <img src="docs/screenshots/tray-icon-plugged-in.png" width="142" alt="Blue 120 Hz tray icon"> | <img src="docs/screenshots/tray-icon-battery.png" width="142" alt="Amber 60 Hz tray icon"> | <img src="docs/screenshots/tooltip.png" width="300" alt="Tooltip: 120 Hz, plugged in, auto 120 Hz AC / 60 Hz battery"> |
 
 Click the icon to show the quick menu:
+
+<img src="docs/screenshots/tray-menu.png" width="420" alt="Tray menu with the Plugged in submenu open">
+
 - **Settings…**: opens the settings window
 - **Auto-switch enabled**: master on/off toggle
 - **Plugged in ▸ / On battery ▸**: pick the rate for each state. With more than one display,
@@ -47,6 +60,9 @@ Click the icon to show the quick menu:
 Open it from **Settings…** in the tray menu, or from the Start Menu. Each connected display has its own
 section: tick **Switch this display automatically** and choose its plugged-in and battery rates.
 Changes apply immediately. Closing the window keeps the app running in the tray.
+
+<p align="center"><img src="docs/screenshots/settings-2displays.png" width="429" alt="Settings window with a built-in display and an external monitor, each with its own rates"><br>
+<sub>Example with an external monitor connected</sub></p>
 
 Settings follow the monitor rather than the port, so a monitor keeps its settings when you plug it into a
 different port or dock. Two identical monitors are told apart by the port they're connected to.
@@ -60,10 +76,11 @@ When the power source changes it switches the rate and, if notifications are on,
 
 <img src="docs/screenshots/notification-plugged-in.png" width="380" alt="Notification: Plugged in, refresh rate set to 120 Hz"> <img src="docs/screenshots/notification-battery.png" width="380" alt="Notification: On battery, refresh rate set to 60 Hz">
 
-It's lightweight: about 9 MB of memory and no CPU use while idle, since it only wakes up on power and display events.
-The settings window is only created when you open it and is freed again when you close it.
+It's lightweight and uses very few resources: it sleeps until the power source or display setup changes,
+so it uses no CPU while idle. The settings window is only created when you open it and is freed again
+when you close it.
 
-<img src="docs/screenshots/task-manager.png" width="600" alt="Task Manager showing RefreshRateSwitcher using 0% CPU and 8.9 MB memory">
+<img src="docs/screenshots/task-manager.png" width="600" alt="Task Manager showing RefreshRateSwitcher as a background process using 0% CPU">
 
 ## Uninstall
 Settings → Apps → Installed apps → Refresh Rate Switcher → Uninstall.
