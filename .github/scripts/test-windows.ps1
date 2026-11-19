@@ -152,6 +152,19 @@ Note ('after closing window: ' + (Usage $app))
 Check ((PrivateWS $app) -le $idlePrivate * 1.5) 'memory returns close to the idle level after closing the window'
 Screenshot 'after-close'
 
+# Open and close the window repeatedly: memory and handles must not keep growing
+$app.Refresh(); $h0 = $app.HandleCount
+for ($i = 1; $i -le 6; $i++) {
+  Start-Process $installedExe -Wait; Start-Sleep 2
+  $hw = [W32]::FindWindow([NullString]::Value, 'Refresh Rate Switcher')
+  [W32]::PostMessage($hw, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null; Start-Sleep 2
+  if ($i -eq 1) { $app.Refresh(); $h1 = $app.HandleCount; $m1 = PrivateWS $app }
+}
+Start-Sleep 2; $app.Refresh()
+Note ("after 6 open/close cycles: " + (Usage $app) + " (after 1st cycle: $h1 handles)")
+Check ($app.HandleCount -le $h1 + 15) 'no handle leak from opening/closing the window'
+Check ((PrivateWS $app) -le [Math]::Max($m1, $idlePrivate) * 1.5) 'no memory growth from opening/closing the window'
+
 Start-Process $installedExe -ArgumentList '--background' -Wait
 Check ((AppProcs).Count -eq 1) 'a second --background launch exits quietly'
 Check ([W32]::FindWindow([NullString]::Value, 'Refresh Rate Switcher') -eq [IntPtr]::Zero) '…without opening the window'
