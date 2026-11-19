@@ -27,6 +27,15 @@ namespace RefreshRateSwitcher
 
         public string ShortDeviceName => (DeviceName ?? "").Replace(@"\\.\", "");
 
+        /// <summary>True for an external monitor that reports EDID IDs (its settings are matched by model, then port).</summary>
+        public bool IsEdidExternal => !IsInternal && EdidValid;
+
+        /// <summary>Model ID, e.g. "edid:AC10-A0B1". Identical monitors share it.</summary>
+        public string ModelKey => $"edid:{EdidManufacturer:X4}-{EdidProduct:X4}";
+
+        /// <summary>The port the monitor is on, e.g. "t10c1" (output technology and connector number).</summary>
+        public string Port => $"t{OutputTech}c{Connector}";
+
         public string Label
         {
             get
@@ -262,6 +271,8 @@ namespace RefreshRateSwitcher
         ///  - external with EDID IDs              → "edid:MMMM-PPPP" (same monitor on any port keeps its settings)
         ///  - two identical external monitors     → "edid:MMMM-PPPP:tTcC" (told apart by connector)
         ///  - no EDID info                        → "path:..." or, failing that, "gdi:DISPLAYn"
+        /// These are first guesses: Settings.BindKeys then matches external monitors to the settings
+        /// they were saved under, so plugging in a second identical monitor doesn't rename the first.
         /// </summary>
         internal static void AssignKeys(List<DisplayInfo> list)
         {
@@ -272,10 +283,10 @@ namespace RefreshRateSwitcher
                     d.Key = internalCount == 1 ? "internal" : "internal:" + (d.EdidValid ? $"{d.EdidManufacturer:X4}-{d.EdidProduct:X4}:" : "") + d.ShortDeviceName;
                 else if (d.EdidValid)
                 {
-                    string baseKey = $"edid:{d.EdidManufacturer:X4}-{d.EdidProduct:X4}";
+                    string baseKey = d.ModelKey;
                     bool dup = list.Count(o => !o.IsInternal && o.EdidValid &&
                                                o.EdidManufacturer == d.EdidManufacturer && o.EdidProduct == d.EdidProduct) > 1;
-                    d.Key = dup ? $"{baseKey}:t{d.OutputTech}c{d.Connector}" : baseKey;
+                    d.Key = dup ? $"{baseKey}:{d.Port}" : baseKey;
                 }
                 else if (!string.IsNullOrEmpty(d.MonitorPath))
                     d.Key = "path:" + d.MonitorPath;

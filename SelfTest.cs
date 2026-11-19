@@ -48,6 +48,8 @@ namespace RefreshRateSwitcher
                 ("Display IDs", d => KeyAssignment()),
                 ("Nearest rate", d => NearestRate()),
                 ("Settings & migration", d => SettingsTests()),
+                ("Display identity & late rates", d => IdentityTests()),
+                ("Power events & retries", d => EventTests()),
                 ("Tray menu", d => MenuTests()),
                 ("Settings window", WindowTests),
             };
@@ -216,6 +218,132 @@ namespace RefreshRateSwitcher
                 try { Registry.CurrentUser.DeleteSubKeyTree(Settings.KeyPath, false); } catch { }
                 Settings.KeyPath = original;
             }
+        }
+
+        // ------------------------------------------------------------------ identity, late rates, events
+
+        static DisplayInfo Dell(uint connector, bool primary = false) => new DisplayInfo
+        {
+            DeviceName = @"\\.\DISPLAY" + (connector + 1), Name = "DELL U2723QE", IsPrimary = primary,
+            Width = 3840, Height = 2160, CurrentHz = 60,
+            EdidValid = true, EdidManufacturer = 0xAC10, EdidProduct = 0xA0B1, OutputTech = 10, Connector = connector,
+        };
+
+        // What the app does with each display-change event: initial IDs, match to saved settings, add new ones
+        static List<DisplayInfo> Connect(Settings s, params DisplayInfo[] displays)
+        {
+            var l = displays.ToList();
+            NativeDisplay.AssignKeys(l);
+            s.BindKeys(l);
+            s.EnsureDisplays(l, FakeRates);
+            return l;
+        }
+
+        static void IdentityTests()
+        {
+            Check(Settings.ModelFromKey("edid:AC10-A0B1:t10c1#DISPLAY3") == "edid:AC10-A0B1" &&
+                  Settings.PortFromKey("edid:AC10-A0B1:t10c1#DISPLAY3") == "t10c1" &&
+                  Settings.PortFromKey("edid:AC10-A0B1") == "" && Settings.ModelFromKey("path:" + LgPath) == null,
+                  "model and port read back from saved IDs");
+
+            string original = Settings.KeyPath;
+            Settings.KeyPath = @"Software\RefreshRateSwitcher-SelfTest";
+            try
+            {
+                void Wipe() => Registry.CurrentUser.DeleteSubKeyTree(Settings.KeyPath, false);
+
+                // Desktop: monitor A alone → identical B added → B alone → both after a restart → A on a dock
+                Wipe();
+                var s = Settings.Load();
+                var a = Connect(s, Dell(0, primary: true));
+                string keyA = a[0].Key;
+                var rA = s.Get(keyA);
+                Check(rA != null && rA.Managed, $"A alone: switched by default ({keyA})");
+                rA.PluggedInHz = 50; rA.BatteryHz = 30;   // the user's own choice
+
+                var both = Connect(s, Dell(0, primary: true), Dell(1));
+                string keyB = both[1].Key;
+                Check(both[0].Key == keyA, $"A+B: A keeps its ID → {both[0].Key}");
+                Check(s.Get(keyA).Managed && s.Get(keyA).PluggedInHz == 50 && s.Get(keyA).BatteryHz == 30,
+                      "A+B: A is still switched at 50/30 Hz");
+                Check(keyB != keyA && s.Get(keyB) != null && !s.Get(keyB).Managed, $"A+B: B gets its own settings, not switched ({keyB})");
+
+                var bAlone = Connect(s, Dell(1, primary: true));
+                Check(bAlone[0].Key == keyB && !s.Get(keyB).Managed, "B alone: B keeps its own settings, doesn't take over A's");
+                Check(s.Get(keyA).PluggedInHz == 50 && s.Get(keyA).Managed, "B alone: A's settings untouched");
+                s.Save();
+
+                var r = Settings.Load();   // restart
+                both = Connect(r, Dell(0, primary: true), Dell(1));
+                Check(both[0].Key == keyA && both[1].Key == keyB, "both after restart: same IDs");
+                Check(r.Get(keyA).Managed && r.Get(keyA).PluggedInHz == 50 && r.Get(keyA).BatteryHz == 30 && !r.Get(keyB).Managed,
+                      "both after restart: A switched at 50/30 Hz, B not switched");
+                Check(r.Displays.Count == 2, $"no duplicate settings created ({r.Displays.Count})");
+
+                var docked = Connect(r, Dell(5, primary: true));
+                Check(docked[0].Key == keyA, "a lone monitor on a new port or dock keeps the first monitor's settings");
+                both = Connect(r, Dell(0, primary: true), Dell(1));
+                Check(both[0].Key == keyA && both[1].Key == keyB && r.Displays.Count == 2, "back at the desk: A and B as before");
+
+                // Upgrade from 1.2.0/1.2.1: lone-monitor settings without a port, identical-monitor ID with one
+                Wipe();
+                using (var k = Registry.CurrentUser.CreateSubKey(Settings.KeyPath + @"\Displays\edid:AC10-A0B1"))
+                { k.SetValue("Key", "edid:AC10-A0B1"); k.SetValue("Managed", 1); k.SetValue("PluggedInHz", 50); k.SetValue("BatteryHz", 30); }
+                using (var k = Registry.CurrentUser.CreateSubKey(Settings.KeyPath + @"\Displays\edid:AC10-A0B1:t10c1"))
+                { k.SetValue("Key", "edid:AC10-A0B1:t10c1"); k.SetValue("Managed", 0); k.SetValue("PluggedInHz", 60); k.SetValue("BatteryHz", 60); }
+                s = Settings.Load();
+                Check(s.Get("edid:AC10-A0B1:t10c1").Port == "t10c1" && s.Get("edid:AC10-A0B1").Port == "", "1.2.x settings: port taken from the ID where there is one");
+                both = Connect(s, Dell(0, primary: true), Dell(1));
+                Check(both[0].Key == "edid:AC10-A0B1" && both[1].Key == "edid:AC10-A0B1:t10c1" && s.Displays.Count == 2,
+                      $"1.2.x settings: both monitors find theirs → {both[0].Key}, {both[1].Key}");
+                Check(s.Get("edid:AC10-A0B1").Port == "t10c0", "1.2.x settings: port remembered from now on");
+
+                // Driver reports no rates at first (e.g. waking up or docking), then reports them
+                Wipe();
+                var lap = new List<DisplayInfo> { Laptop()[0] };
+                NativeDisplay.AssignKeys(lap);
+                s = Settings.Load();
+                s.EnsureDisplays(lap, d => new List<int>());
+                Check(s.Get("internal").Managed && s.Get("internal").PluggedInHz == 0 && s.Get("internal").BatteryHz == 0,
+                      "no rates reported yet: display added, rates left unset");
+                s.Save();
+                s = Settings.Load();
+                Check(!s.EnsureDisplays(lap, d => new List<int>()), "still no rates: nothing changes");
+                Check(s.EnsureDisplays(lap, FakeRates) && s.Get("internal").PluggedInHz == 165 && s.Get("internal").BatteryHz == 60,
+                      "rates reported later (after save and reload): filled in as 165/60 Hz");
+                s.Get("internal").BatteryHz = 48; s.Get("internal").PluggedInHz = 0;
+                s.EnsureDisplays(lap, FakeRates);
+                Check(s.Get("internal").PluggedInHz == 165 && s.Get("internal").BatteryHz == 48, "only unset rates are filled; a chosen rate is kept");
+            }
+            finally
+            {
+                try { Registry.CurrentUser.DeleteSubKeyTree(Settings.KeyPath, false); } catch { }
+                Settings.KeyPath = original;
+            }
+        }
+
+        static void EventTests()
+        {
+            Check(TrayApp.ResolveReason("power status", ac: false, lastAC: true) == "power change", "unplugging counts as a power change");
+            Check(TrayApp.ResolveReason("power status", ac: true, lastAC: true) == "display change",
+                  "battery-% update on the same power source doesn't re-apply (keeps a rate picked in Windows)");
+            Check(TrayApp.ResolveReason("resume", true, true) == "resume" && TrayApp.FullApply("resume") && !TrayApp.FullApply("retry"),
+                  "wake from sleep still re-applies; retries don't reset anything");
+
+            var c = new ApplyCache();
+            Check(!c.Skip("d", 120, true), "new display is set");
+            c.Succeeded("d", 120, true);
+            Check(c.Skip("d", 120, true) && !c.Skip("d", 60, false), "a rate that was set isn't set again until the target changes");
+            Check(c.Failed("e", 120, true) == 1 && !c.Skip("e", 120, true), "a refused change is tried again on the next display change");
+            Check(c.Failed("e", 120, true) == 2 && c.Failed("e", 120, true) == ApplyCache.MaxTries && c.Skip("e", 120, true),
+                  $"…but gives up after {ApplyCache.MaxTries} tries");
+            Check(c.Failed("e", 60, false) == 1, "a new target counts afresh");
+            c.Succeeded("e", 60, false);
+            Check(c.Skip("e", 60, false), "success after failures is remembered");
+            c.KeepOnly(new[] { "e" });
+            Check(!c.Skip("d", 120, true), "unplugged display is set again when reconnected");
+            c.Clear();
+            Check(!c.Skip("e", 60, false), "power or manual change starts afresh");
         }
 
         // ------------------------------------------------------------------ UI
