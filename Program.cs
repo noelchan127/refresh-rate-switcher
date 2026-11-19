@@ -65,9 +65,25 @@ namespace RefreshRateSwitcher
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+                // An unexpected error shouldn't take the app down or pop up a .NET error box:
+                // note it in %TEMP%\RefreshRateSwitcher-errors.log and carry on
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                Application.ThreadException += (s, e) => LogError(e.Exception);
                 Application.Run(new TrayApp(background));
             }
             return 0;
+        }
+
+        internal static void LogError(Exception ex)
+        {
+            try
+            {
+                var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RefreshRateSwitcher-errors.log");
+                var info = new System.IO.FileInfo(path);
+                if (info.Exists && info.Length > 256 * 1024) info.Delete();   // keep it small
+                System.IO.File.AppendAllText(path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {AppInfo.Name} {AppInfo.Version}\r\n{ex}\r\n\r\n");
+            }
+            catch { }
         }
     }
 }

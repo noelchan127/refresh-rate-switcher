@@ -62,7 +62,7 @@ function Screenshot([string]$name) {
   $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
   $g = [System.Drawing.Graphics]::FromImage($bmp)
   $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-  $h = [W32]::FindWindow($null, 'Refresh Rate Switcher')
+  $h = [W32]::FindWindow([NullString]::Value, 'Refresh Rate Switcher')
   if ($h -ne [IntPtr]::Zero) {
     $r = New-Object W32+RECT
     [W32]::GetWindowRect($h, [ref]$r) | Out-Null
@@ -78,10 +78,16 @@ function Screenshot([string]$name) {
   $g.Dispose(); $bmp.Dispose()
 }
 
+# "Memory" in Task Manager's Processes tab = private working set
+function PrivateWS([System.Diagnostics.Process]$p) {
+  try { (Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "IDProcess=$($p.Id)").WorkingSetPrivate } catch { 0 }
+}
 function Usage([System.Diagnostics.Process]$p) {
   $p.Refresh()
-  '{0:N1} MB working set, {1:N1} MB private, {2} threads, {3} handles' -f ($p.WorkingSet64 / 1MB), ($p.PrivateMemorySize64 / 1MB), $p.Threads.Count, $p.HandleCount
+  '{0:N1} MB in Task Manager (private working set), {1:N1} MB working set, {2} threads, {3} handles' -f ((PrivateWS $p) / 1MB), ($p.WorkingSet64 / 1MB), $p.Threads.Count, $p.HandleCount
 }
+$errorLog = Join-Path $env:TEMP 'RefreshRateSwitcher-errors.log'
+Remove-Item $errorLog -ErrorAction SilentlyContinue
 
 # ------------------------------------------------------------------ machine info
 $os = Get-CimInstance Win32_OperatingSystem
@@ -122,7 +128,8 @@ $cpu0 = $app.TotalProcessorTime; Start-Sleep 20; $app.Refresh()
 $cpuMs = ($app.TotalProcessorTime - $cpu0).TotalMilliseconds
 Note ("CPU over 20 s idle: {0:N0} ms" -f $cpuMs)
 Check ($cpuMs -lt 200) 'idle CPU use is negligible'
-Check ($app.WorkingSet64 -lt 40MB) 'idle memory under 40 MB'
+$idlePrivate = PrivateWS $app
+Check ($idlePrivate -gt 0 -and $idlePrivate -lt 20MB) 'idle memory (Task Manager) under 20 MB'
 $displays = @(Get-ChildItem "$settingsKey\Displays" -ErrorAction SilentlyContinue)
 Check ($displays.Count -ge 1) "settings saved for $($displays.Count) display(s)"
 $displays | ForEach-Object { $v = Get-ItemProperty $_.PSPath; Note "display '$($v.Name)' id=$($v.Key) switched=$($v.Managed) $($v.PluggedInHz)/$($v.BatteryHz) Hz" }
@@ -131,20 +138,23 @@ Write-Host "`n== Second launch opens the settings window"
 Start-Process $installedExe -Wait
 Start-Sleep 4
 Check ((AppProcs).Count -eq 1) 'still a single instance'
-$h = [W32]::FindWindow($null, 'Refresh Rate Switcher')
+$h = [W32]::FindWindow([NullString]::Value, 'Refresh Rate Switcher')
 Check ($h -ne [IntPtr]::Zero) 'settings window opened'
 Screenshot 'installed-app'
 Note ('with window open: ' + (Usage $app))
 
 [W32]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null   # WM_CLOSE
 Start-Sleep 3
-Check ([W32]::FindWindow($null, 'Refresh Rate Switcher') -eq [IntPtr]::Zero) 'window closed'
+Check ([W32]::FindWindow([NullString]::Value, 'Refresh Rate Switcher') -eq [IntPtr]::Zero) 'window closed'
 Check ((AppProcs).Count -eq 1) 'app keeps running in the tray after the window closes'
+Start-Sleep 2
 Note ('after closing window: ' + (Usage $app))
+Check ((PrivateWS $app) -le $idlePrivate * 1.5) 'memory returns close to the idle level after closing the window'
+Screenshot 'after-close'
 
 Start-Process $installedExe -ArgumentList '--background' -Wait
 Check ((AppProcs).Count -eq 1) 'a second --background launch exits quietly'
-Check ([W32]::FindWindow($null, 'Refresh Rate Switcher') -eq [IntPtr]::Zero) '…without opening the window'
+Check ([W32]::FindWindow([NullString]::Value, 'Refresh Rate Switcher') -eq [IntPtr]::Zero) '…without opening the window'
 
 # ------------------------------------------------------------------ 4. uninstall
 Write-Host "`n== Uninstall"
@@ -177,7 +187,9 @@ try {
   gh release download v1.1.3 --repo $env:GITHUB_REPOSITORY --pattern '*.exe' --dir $old --clobber
   $oldSetup = Get-ChildItem $old -Filter '*Setup*.exe' | Select-Object -First 1
   Install $oldSetup.FullName | Out-Null
-  Start-Process $installedExe; Start-Sleep 6; StopApp   # 1.1.3 first run: saves settings, adds startup entry
+  Start-Process $installedExe; Start-Sleep 6           # 1.1.3 first run: saves settings, adds startup entry
+  Note ('1.1.3 for comparison: ' + (Usage (AppProcs)[0]))
+  StopApp
   Note "1.1.3 startup entry: $(RunValue)"
   $legacy = Get-ItemProperty $settingsKey
   Note "1.1.3 settings: $($legacy.PluggedInHz)/$($legacy.BatteryHz) Hz, display $($legacy.Display)"
@@ -197,7 +209,17 @@ try {
 }
 
 # ------------------------------------------------------------------ result
+Check (-not (Test-Path $errorLog)) 'no errors logged by the app'
+if (Test-Path $errorLog) { Get-Content $errorLog | Write-Host }
 $summary | Set-Content (Join-Path $results 'install-tests.txt')
+
+# Print the screenshots as base64 so they can be read from the log as well as the artifact
+foreach ($img in Get-ChildItem $results -Filter *.png) {
+  $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($img.FullName))
+  Write-Host "##IMG-BEGIN $($img.Name)"
+  for ($i = 0; $i -lt $b64.Length; $i += 4000) { Write-Host ('##IMG ' + $b64.Substring($i, [Math]::Min(4000, $b64.Length - $i))) }
+  Write-Host "##IMG-END"
+}
 Write-Host ''
 if ($script:failures -gt 0) { Write-Host "$($script:failures) failure(s)"; exit 1 }
 Write-Host 'All Windows tests passed'

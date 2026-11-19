@@ -131,8 +131,8 @@ namespace RefreshRateSwitcher
             _aboutBody.Controls.Add(Wrap("Paste this into a bug report so I can see your display setup.", grey: true));
 
             // ---------- Window ----------
-            _settingsPage = new TabPage("Settings") { UseVisualStyleBackColor = true, Padding = Padding.Empty };
-            _aboutPage = new TabPage("About") { UseVisualStyleBackColor = true, Padding = Padding.Empty };
+            _settingsPage = new TabPage("Settings") { UseVisualStyleBackColor = true, Padding = Padding.Empty, AutoScroll = true };
+            _aboutPage = new TabPage("About") { UseVisualStyleBackColor = true, Padding = Padding.Empty, AutoScroll = true };
             _settingsPage.Controls.Add(_settingsBody);
             _aboutPage.Controls.Add(_aboutBody);
             _tabs = new TabControl { Margin = new Padding(8, 8, 8, 0) };
@@ -344,6 +344,15 @@ namespace RefreshRateSwitcher
             var ap = _aboutBody.GetPreferredSize(Size.Empty);
             var content = new Size(Math.Max(sp.Width, ap.Width), Math.Max(sp.Height, ap.Height));
             var chrome = new Size(_tabs.Width - _tabs.DisplayRectangle.Width, _tabs.Height - _tabs.DisplayRectangle.Height);
+
+            // With many displays or high scaling the window could be taller than the screen: scroll instead
+            int around = Height - _tabs.Height;   // title bar, borders, Close button
+            int maxContent = Screen.FromControl(this).WorkingArea.Height - around - chrome.Height - (int)(16 * Scale100());
+            if (content.Height > maxContent && maxContent > 100)
+            {
+                content.Height = maxContent;
+                content.Width += SystemInformation.VerticalScrollBarWidth;
+            }
             _tabs.Size = new Size(content.Width + chrome.Width, content.Height + chrome.Height);
         }
 

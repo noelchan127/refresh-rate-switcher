@@ -1,7 +1,7 @@
 # Refresh Rate Switcher
 
 Windows tray app that sets the display refresh rate automatically depending on whether
-the laptop is plugged in or on battery.
+the laptop is plugged in or on battery. Works with multiple displays, each with its own settings.
 
 <p align="center"><img src="docs/screenshots/tray-menu.png" width="420" alt="Tray menu with the Plugged in submenu open"></p>
 
@@ -12,8 +12,11 @@ in Settings → Apps → Installed apps. Running the setup again upgrades in pla
 
 <img src="docs/screenshots/start-menu.png" width="110" alt="Start Menu entry" align="right">
 
-On first run the app picks max Hz for plugged in, 60 Hz (or the lowest) for battery,
-and enables "Start with Windows".
+Setup asks whether to **start the app when you sign in to Windows** (recommended; you can change it later).
+For silent installs, use `/S`, and add `/NOSTARTUP` to skip the startup entry.
+
+On first run, the built-in laptop screen is set to switch between its highest rate when plugged in and
+60 Hz (or its lowest rate) on battery. External monitors are left alone until you turn them on in Settings.
 
 ### Security warnings
 The installer and app are **not code-signed**, so Windows may warn you the first time:
@@ -33,17 +36,32 @@ Hover over it to see both settings.
 |:---:|:---:|:---:|
 | <img src="docs/screenshots/tray-icon-plugged-in.png" width="150" alt="Blue 120 Hz tray icon"> | <img src="docs/screenshots/tray-icon-battery.png" width="190" alt="Amber 60 Hz tray icon"> | <img src="docs/screenshots/tooltip.png" width="300" alt="Tooltip showing current rate and settings"> |
 
-Click the icon (or open the app from the Start Menu while it's running) to show the menu:
+Click the icon to show the quick menu:
+- **Settings…**: opens the settings window
 - **Auto-switch enabled**: master on/off toggle
-- **Plugged in ▸ / On battery ▸**: pick the rate for each state
-- **Display ▸**: Automatic = built-in laptop panel (falls back to primary display)
-- **Start with Windows**, **Show notifications**, **Exit**
+- **Plugged in ▸ / On battery ▸**: pick the rate for each state. With more than one display,
+  each display gets its own submenu, including **Switch this display**.
+- **Start with Windows**, **Show notifications**, **About**, **Exit**
+
+### Settings window
+Open it from **Settings…** in the tray menu, or from the Start Menu. Each connected display has its own
+section: tick **Switch this display automatically** and choose its plugged-in and battery rates.
+Changes apply immediately. Closing the window keeps the app running in the tray.
+
+Settings follow the monitor rather than the port, so a monitor keeps its settings when you plug it into a
+different port or dock. Two identical monitors are told apart by the port they're connected to.
+
+The **About** tab shows the version, licence and links to the latest release and the source code.
+The app itself never connects to the internet, so it doesn't check for updates automatically:
+to update, download the latest installer and run it. **Copy system info** copies your display details,
+which is useful in a bug report.
 
 When the power source changes it switches the rate and, if notifications are on, tells you:
 
 <img src="docs/screenshots/notification-plugged-in.png" width="380" alt="Notification: Plugged in, refresh rate set to 120 Hz"> <img src="docs/screenshots/notification-battery.png" width="380" alt="Notification: On battery, refresh rate set to 60 Hz">
 
 It's lightweight: about 9 MB of memory and no CPU use while idle, since it only wakes up on power and display events.
+The settings window is only created when you open it and is freed again when you close it.
 
 <img src="docs/screenshots/task-manager.png" width="600" alt="Task Manager showing RefreshRateSwitcher using 0% CPU and 8.9 MB memory">
 
@@ -58,11 +76,19 @@ This closes the app and removes files, the Start Menu entry, the startup entry a
   re-select it in Settings → System → Display → Advanced display → Choose a refresh rate.
 - Laptop vendor utilities (e.g. Armoury Crate, Lenovo Vantage, Dell/HP tools) that also change the refresh rate
   on power events will conflict with this app. Turn that feature off in the vendor tool.
+- Displays set to **Duplicate** share one refresh rate, so they appear as a single entry.
+- If you change a display's rate yourself in Windows Settings, the app leaves it until the next time you
+  plug in or unplug.
 
 ## Build from source
 `dotnet build -c Release` (needs the .NET SDK; the .NET Framework 4.8 reference assemblies come from NuGet automatically).
 
 Installer: `makensis installer.nsi` (NSIS 3) after building; output goes to `out\`.
+
+Tests: `RefreshRateSwitcher.exe --selftest <folder>` checks the Windows display APIs on your machine
+(without changing anything), the settings logic and the window layout, and writes a report and preview
+images to the folder. GitHub Actions also runs [`.github/scripts/test-windows.ps1`](.github/scripts/test-windows.ps1),
+which installs, upgrades, runs and uninstalls the app on Windows for every change.
 
 ## Security
 To report a security problem, please see [SECURITY.md](SECURITY.md). Don't post it in a public issue.

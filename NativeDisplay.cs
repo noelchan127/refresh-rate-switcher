@@ -285,6 +285,14 @@ namespace RefreshRateSwitcher
                 if (string.IsNullOrWhiteSpace(d.Name))
                     d.Name = d.IsInternal ? "Built-in display" : "Display " + d.ShortDeviceName.Replace("DISPLAY", "");
             }
+            // Two monitors of the same model: number them so they can be told apart in the menu and window
+            foreach (var g in list.GroupBy(d => d.Name, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
+            {
+                int n = 1;
+                foreach (var d in g.OrderBy(x => x.Connector).ThenBy(x => x.DeviceName, StringComparer.OrdinalIgnoreCase))
+                    d.Name += $" ({n++})";
+            }
+
             // Last-resort uniqueness guard
             foreach (var g in list.GroupBy(d => d.Key, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
                 foreach (var d in g.Skip(1)) d.Key += "#" + d.ShortDeviceName;

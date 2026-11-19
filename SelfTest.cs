@@ -122,6 +122,7 @@ namespace RefreshRateSwitcher
             Check(l[0].Key == "internal", "built-in panel → " + l[0].Key);
             Check(l[1].Key == "edid:AC10-A0B1:t10c0" && l[2].Key == "edid:AC10-A0B1:t10c1",
                   $"identical monitors told apart → {l[1].Key}, {l[2].Key}");
+            Check(l[1].Name == "DELL U2723QE (1)" && l[2].Name == "DELL U2723QE (2)", $"identical monitors get numbered names → {l[1].Name}, {l[2].Name}");
             Check(l[3].Key == "path:" + LgPath, "monitor without EDID IDs uses its device path");
 
             var single = new List<DisplayInfo> { Laptop()[1] };
@@ -275,7 +276,7 @@ namespace RefreshRateSwitcher
                 foreach (var line in t) Info(line);
                 Check(t.Count(x => !x.StartsWith(" ") && (x.Contains("Built-in display ·") || x.Contains("DELL") || x.Contains("LG"))) == 4,
                       "multiple displays: one submenu per display");
-                Check(t.Any(x => x.Contains("DELL U2723QE · 60 Hz  (not switched)")), "external monitor shows as not switched");
+                Check(t.Any(x => x.Contains("DELL U2723QE (2) · 60 Hz  (not switched)")), "external monitor shows as not switched");
             }
         }
 
@@ -307,8 +308,7 @@ namespace RefreshRateSwitcher
                         Check(clipped.Count == 0, $"{name}: no clipped controls" + (clipped.Count > 0 ? " → " + string.Join("; ", clipped) : ""));
                         var wa = Screen.PrimaryScreen.WorkingArea;
                         Info($"screen working area {wa.Width}x{wa.Height}");
-                        if (scale == 1f && about == false)
-                            Check(f.Height <= 768 && f.Width <= 1024, "window fits a 1366×768 laptop screen at 100%");
+                        Check(f.Height <= wa.Height && f.Width <= wa.Width, "window fits on the screen");
 
                         // Exercise the controls like a user would
                         if (!about)
@@ -355,7 +355,9 @@ namespace RefreshRateSwitcher
                 if (!c.Visible) continue;
                 var area = parent.DisplayRectangle;
                 if (parent is TabPage || parent is Form) area = new Rectangle(Point.Empty, parent.ClientSize);
-                if (c.Right > area.Right + 1 || c.Bottom > area.Bottom + 1)
+                bool scrolls = parent is ScrollableControl sc && sc.AutoScroll && sc.VerticalScroll.Visible;
+                if (scrolls) _log.AppendLine($"      {parent.GetType().Name} '{Trim(parent.Text)}' scrolls (content {c.Height} px, visible {area.Height} px)");
+                if (c.Right > area.Right + 1 || (!scrolls && c.Bottom > area.Bottom + 1))
                     found.Add($"{c.GetType().Name} '{Trim(c.Text)}' {c.Bounds} outside {parent.GetType().Name} {area}");
                 if ((c is Label || c is CheckBox || c is Button) && c.AutoSize)
                 {
