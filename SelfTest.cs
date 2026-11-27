@@ -50,6 +50,7 @@ namespace RefreshRateSwitcher
                 ("Settings & migration", d => SettingsTests()),
                 ("Display identity & late rates", d => IdentityTests()),
                 ("Power events & retries", d => EventTests()),
+                ("Robustness", d => RobustnessTests()),
                 ("Display cache", d => CacheTests()),
                 ("Tray menu", d => MenuTests()),
                 ("Settings window", WindowTests),
@@ -385,20 +386,66 @@ namespace RefreshRateSwitcher
             Check(TrayApp.ResolveReason("resume", true, true) == "resume" && TrayApp.FullApply("resume") && !TrayApp.FullApply("retry"),
                   "wake from sleep still re-applies; retries don't reset anything");
 
+            Check(TrayApp.Rank("power status") < TrayApp.Rank("resume") && TrayApp.Rank("display change") < TrayApp.Rank("power status") &&
+                  TrayApp.Rank("retry") == TrayApp.Rank("display change") && TrayApp.Rank("") == 0,
+                  "a battery-% update right after waking doesn't cancel the wake re-apply; power events outrank display changes");
+
+            const string D1 = @"\\.\DISPLAY1", D2 = @"\\.\DISPLAY2", D3 = @"\\.\DISPLAY3";
             var c = new ApplyCache();
-            Check(!c.Skip("d", 120, true), "new display is set");
-            c.Succeeded("d", 120, true);
-            Check(c.Skip("d", 120, true) && !c.Skip("d", 60, false), "a rate that was set isn't set again until the target changes");
-            Check(c.Failed("e", 120, true) == 1 && !c.Skip("e", 120, true), "a refused change is tried again on the next display change");
-            Check(c.Failed("e", 120, true) == 2 && c.Failed("e", 120, true) == ApplyCache.MaxTries && c.Skip("e", 120, true),
+            Check(!c.Skip("d", D1, 120, true), "new display is set");
+            c.Succeeded("d", D1, 120, true);
+            Check(c.Skip("d", D1, 120, true) && !c.Skip("d", D1, 60, false), "a rate that was set isn't set again until the target changes");
+            Check(!c.Skip("d", D3, 120, true), "a monitor that reconnected (new Windows device name) is set again");
+            Check(c.Failed("e", D2, 120, true) == 1 && !c.Skip("e", D2, 120, true), "a refused change is tried again on the next display change");
+            Check(c.Failed("e", D2, 120, true) == 2 && c.Failed("e", D2, 120, true) == ApplyCache.MaxTries && c.Skip("e", D2, 120, true),
                   $"…but gives up after {ApplyCache.MaxTries} tries");
-            Check(c.Failed("e", 60, false) == 1, "a new target counts afresh");
-            c.Succeeded("e", 60, false);
-            Check(c.Skip("e", 60, false), "success after failures is remembered");
+            Check(c.Failed("e", D3, 120, true) == 1, "…and starts counting afresh after a reconnect");
+            Check(c.Failed("e", D3, 60, false) == 1, "a new target counts afresh");
+            c.Succeeded("e", D3, 60, false);
+            Check(c.Skip("e", D3, 60, false), "success after failures is remembered");
+            c.Forget("e");
+            Check(!c.Skip("e", D3, 60, false) && c.Skip("d", D1, 120, true), "a change made in the app sets only that display again");
+            c.Succeeded("e", D3, 60, false);
             c.KeepOnly(new[] { "e" });
-            Check(!c.Skip("d", 120, true), "unplugged display is set again when reconnected");
+            Check(!c.Skip("d", D1, 120, true), "unplugged display is set again when reconnected");
             c.Clear();
-            Check(!c.Skip("e", 60, false), "power or manual change starts afresh");
+            Check(!c.Skip("e", D3, 60, false), "power change starts afresh");
+        }
+
+        static void RobustnessTests()
+        {
+            Check(!Settings.DisabledInWindows(null) && !Settings.DisabledInWindows(new byte[] { 2, 0, 0, 0 }) &&
+                  !Settings.DisabledInWindows(new byte[] { 6, 0 }) && Settings.DisabledInWindows(new byte[] { 3, 0, 0, 0 }) &&
+                  Settings.DisabledInWindows(new byte[] { 7 }),
+                  "Windows' Startup apps switch read correctly (2/6 = on, 3/7 = off, none = on)");
+
+            string original = Settings.KeyPath;
+            Settings.KeyPath = @"Software\RefreshRateSwitcher-SelfTest";
+            try
+            {
+                Registry.CurrentUser.DeleteSubKeyTree(Settings.KeyPath, false);
+                using (var k = Registry.CurrentUser.CreateSubKey(Settings.KeyPath))
+                {
+                    k.SetValue("Enabled", "not a number", RegistryValueKind.String);
+                    k.SetValue("Notifications", "0", RegistryValueKind.String);
+                    using (var d = k.CreateSubKey(@"Displays\internal"))
+                    {
+                        d.SetValue("Key", "internal");
+                        d.SetValue("Managed", 1, RegistryValueKind.DWord);
+                        d.SetValue("PluggedInHz", new byte[] { 1, 2, 3 }, RegistryValueKind.Binary);
+                        d.SetValue("BatteryHz", "60", RegistryValueKind.String);
+                    }
+                }
+                var s = Settings.Load();
+                var i = s.Get("internal");
+                Check(s.Enabled && !s.Notifications && i != null && i.Managed && i.PluggedInHz == 0 && i.BatteryHz == 60,
+                      "damaged or hand-edited settings load with defaults instead of stopping the app");
+            }
+            finally
+            {
+                Registry.CurrentUser.DeleteSubKeyTree(Settings.KeyPath, false);
+                Settings.KeyPath = original;
+            }
         }
 
         // ------------------------------------------------------------------ UI
@@ -451,6 +498,7 @@ namespace RefreshRateSwitcher
                 Check(t.Contains("Settings…") && t.Contains("About") && t.Contains("Exit"), "single display: Settings, About and Exit present");
                 Check(t.Any(x => x.StartsWith("Plugged in: 165 Hz")) && t.Any(x => x.StartsWith("On battery: 60 Hz")), "single display: rate menus at top level");
                 Check(t.Any(x => x.Trim() == "[x] 60 Hz"), "battery rate is ticked");
+                Check(t.Contains("[x] Switch this display"), "single display: switching can be turned off from the menu too");
 
                 var many = new FakeHost(Laptop(), ac: true);
                 TrayMenu.Build(menu, many);   // rebuild on the same menu, as the app does

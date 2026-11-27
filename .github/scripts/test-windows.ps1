@@ -13,6 +13,7 @@ $exeName = 'RefreshRateSwitcher.exe'
 $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Refresh Rate Switcher'
 $installedExe = Join-Path $installDir $exeName
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$approvedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
 $uninstKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\RefreshRateSwitcher'
 $settingsKey = 'HKCU:\Software\RefreshRateSwitcher'
 $setup = (Get-ChildItem out -Filter 'RefreshRateSwitcher-Setup-*.exe' | Select-Object -First 1).FullName
@@ -33,7 +34,9 @@ function AppProcs { @(Get-Process RefreshRateSwitcher -ErrorAction SilentlyConti
 function StopApp { AppProcs | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep 1 }
 
 function Install([string]$file, [string[]]$extra = @()) {
-  $p = Start-Process $file -ArgumentList (@('/S') + $extra) -Wait -PassThru
+  # -Wait would also wait for anything setup starts; wait for setup itself, with a time limit
+  $p = Start-Process $file -ArgumentList (@('/S') + $extra) -PassThru
+  if (-not $p.WaitForExit(120000)) { $p.Kill(); return -1 }
   return $p.ExitCode
 }
 function Uninstall {
@@ -107,9 +110,10 @@ StopApp
 Remove-Item $settingsKey -Recurse -ErrorAction SilentlyContinue
 Remove-ItemProperty $runKey RefreshRateSwitcher -ErrorAction SilentlyContinue
 Check ((Install $setup) -eq 0) 'installer exit code 0'
-foreach ($f in $exeName, "$exeName.config", 'app.ico', 'LICENSE.txt', 'Uninstall.exe') {
+foreach ($f in $exeName, "$exeName.config", 'LICENSE.txt', 'Uninstall.exe') {
   Check (Test-Path (Join-Path $installDir $f)) "installed $f"
 }
+Check (-not (Test-Path (Join-Path $installDir 'app.ico'))) 'no unused loose icon file installed'
 $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Refresh Rate Switcher.lnk'
 Check (Test-Path $lnk) 'Start Menu shortcut created'
 $u = Get-ItemProperty $uninstKey -ErrorAction SilentlyContinue
@@ -171,7 +175,11 @@ Check ([W32]::FindWindow([NullString]::Value, 'Refresh Rate Switcher') -eq [IntP
 
 # ------------------------------------------------------------------ 4. uninstall
 Write-Host "`n== Uninstall"
+# As if the user had turned the app off in Task Manager → Startup apps
+New-Item $approvedKey -Force | Out-Null
+Set-ItemProperty $approvedKey RefreshRateSwitcher ([byte[]](3,0,0,0,0,0,0,0,0,0,0,0))
 Uninstall
+Check ($null -eq (Get-ItemProperty $approvedKey -ErrorAction SilentlyContinue).RefreshRateSwitcher) 'Startup apps on/off entry removed'
 Check (-not (Test-Path $installDir)) 'install folder removed'
 Check (-not (Test-Path $lnk)) 'Start Menu shortcut removed'
 Check (-not (Test-Path $uninstKey)) 'Installed apps entry removed'
@@ -202,9 +210,10 @@ Copy-Item "$env:WINDIR\System32\PING.EXE" (Join-Path $decoyDir $exeName) -Force
 $decoy = Start-Process (Join-Path $decoyDir $exeName) -ArgumentList '-n', '600', '127.0.0.1' -WindowStyle Hidden -PassThru
 Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 5
 function InstalledProcs { @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $installedExe }) }
-Check ((InstalledProcs).Count -eq 1) 'installed app running before reinstall'
+$before = @(InstalledProcs)
+Check ($before.Count -eq 1) 'installed app running before reinstall'
 Check ((Install $setup) -eq 0) 'reinstall over a running app: exit code 0'
-Check ((InstalledProcs).Count -eq 0) 'reinstall asked the running app to exit'
+Check ((InstalledProcs).Count -eq 0) 'reinstall asked the running app to exit (and setup finished: it doesn''t leave the app running under it)'
 $decoy.Refresh(); Check (-not $decoy.HasExited) 'unrelated program with the same file name still running after reinstall'
 Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 5
 Start-Process "$installDir\Uninstall.exe" -ArgumentList '/S' -Wait
@@ -244,6 +253,45 @@ try {
 } catch {
   Check $false "upgrade test: $_"
 }
+
+# ------------------------------------------------------------------ 7. upgrade from the previous 1.2.x release
+$prev = gh release list --repo $env:GITHUB_REPOSITORY --exclude-drafts --limit 20 --json tagName --jq '.[].tagName' |
+        Where-Object { $_ -match '^v1\.2\.' -and $_ -ne "v$Version" } | Select-Object -First 1
+Write-Host "`n== Upgrade from $prev"
+if ($prev) {
+  try {
+    $old2 = Join-Path $env:RUNNER_TEMP 'old2'
+    New-Item -ItemType Directory -Force $old2 | Out-Null
+    gh release download $prev --repo $env:GITHUB_REPOSITORY --pattern '*.exe' --dir $old2 --clobber
+    $prevSetup = Get-ChildItem $old2 -Filter '*Setup*.exe' | Select-Object -First 1
+    Install $prevSetup.FullName | Out-Null
+    Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 6
+    Set-ItemProperty $settingsKey Notifications 0      # a recognisable choice that must survive the upgrade
+    $savedBefore = @(Get-ChildItem "$settingsKey\Displays").Count
+    Check ((Install $setup) -eq 0) "upgrade over a running $prev`: exit code 0"
+    Check ((AppProcs).Count -eq 0) "$prev was asked to exit and closed"
+    Check ((Get-ItemProperty $settingsKey).Notifications -eq 0 -and @(Get-ChildItem "$settingsKey\Displays").Count -eq $savedBefore) 'settings kept'
+    Check ((RunValue) -eq "`"$installedExe`" --background") 'startup entry kept'
+    Check (-not (Test-Path (Join-Path $installDir 'app.ico'))) "loose icon file from $prev removed"
+    Uninstall
+  } catch { Check $false "upgrade from $prev`: $_" }
+} else { Note 'no earlier 1.2.x release to upgrade from' }
+
+# ------------------------------------------------------------------ 8. reinstall into a different folder while running
+Write-Host "`n== Reinstall into a different folder while the app is running"
+Install $setup | Out-Null
+Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 5
+$otherDir = Join-Path $env:LOCALAPPDATA 'Programs\RRS Other Folder'
+$p = Start-Process $setup -ArgumentList '/S', "/D=$otherDir" -PassThru; $p.WaitForExit(120000) | Out-Null
+Check ($p.ExitCode -eq 0) 'install into another folder: exit code 0'
+Check ((AppProcs).Count -eq 0) 'the copy running from the old folder was closed'
+Check (Test-Path (Join-Path $otherDir $exeName)) 'installed in the new folder'
+Check (-not (Test-Path $installDir)) 'old install folder removed'
+Check ((RunValue) -eq "`"$(Join-Path $otherDir $exeName)`" --background") 'startup entry points at the new folder'
+Start-Process (Join-Path $otherDir 'Uninstall.exe') -ArgumentList '/S' -Wait
+for ($i = 0; $i -lt 60 -and (Test-Path $uninstKey); $i++) { Start-Sleep -Milliseconds 500 }
+Start-Sleep 1
+Check (-not (Test-Path $otherDir) -and -not (Test-Path $settingsKey) -and $null -eq (RunValue)) 'uninstall from the new folder leaves nothing behind'
 
 # ------------------------------------------------------------------ result
 Check (-not (Test-Path $errorLog)) 'no errors logged by the app'

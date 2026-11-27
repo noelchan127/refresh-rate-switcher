@@ -1,7 +1,20 @@
 Windows tray app that sets the display refresh rate automatically when you plug in or unplug.
 
-### What's new in 1.2.2
-Fixes only, no new features:
+### What's new in 1.2.3
+Fixes and small improvements:
+- **Monitors that briefly disconnect are switched again.** A dock reconnecting, a monitor switching inputs or a graphics driver update could leave a monitor at its default rate. It's now set back to your chosen rate.
+- **Waking from sleep is more reliable.** A battery-percentage update straight after waking could stop the app from setting the rate again. If you plug in or unplug while the PC is asleep, you now also get the notification when it wakes.
+- **Start with Windows** now follows the on/off switch in Task Manager → Startup apps (and Settings → Apps → Startup).
+- **Changing a rate in the app only affects that display**, and only for the power state you changed, so a rate you picked in Windows for another display stays.
+- **New monitors** can be set up the moment they appear.
+- **Settings window:** updates when you change resolution, lets you choose rates while auto-switch is off, and says when the rate was changed outside the app.
+- **Tray menu:** with one display, switching can be turned off as well as on.
+- **More robust:** damaged settings no longer stop the app from starting, start-up problems are logged, and displays keep their identity while the setup is changing. Interlaced modes are no longer offered.
+- **About:** copyright line, the licence opens the copy installed with the app, and a link to report problems privately.
+- **Installer:** closes a running copy wherever it was installed, cleans up the old folder if you install somewhere else, and no longer installs an unused icon file.
+- **Check your download:** each release now lists the installer's SHA-256 checksum in `SHA256SUMS.txt` and carries a GitHub record that it was built here (see the README).
+
+### Fixed in 1.2.2
 - **Identical monitors keep their own settings.** Plugging in a second monitor of the same model no longer makes the first one forget its settings, and a lone monitor no longer takes over another one's. Identical monitors are told apart by the port they were last on, so swapping their cables swaps their settings.
 - **Slow display drivers:** if a driver hadn't reported its refresh rates yet (e.g. right after docking or waking), the display stayed unswitched until you picked rates yourself. Its rates are now filled in once the driver reports them, and the settings window shows them too.
 - **A rate you pick in Windows Settings now stays** until you plug in, unplug, or wake the PC. Battery-percentage updates no longer undo it.
@@ -21,9 +34,9 @@ Fixes only, no new features:
 - Upgrading keeps your settings: your 1.1.x rates move to the display they controlled. Other displays start out not switched.
 
 ### Install
-Download **RefreshRateSwitcher-Setup-1.2.2.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
+Download **RefreshRateSwitcher-Setup-1.2.3.exe** and run it. It installs just for your account (no admin), adds a Start Menu entry, and appears in **Settings → Apps → Installed apps** for uninstalling.
 
-Windows SmartScreen may warn because the installer isn't code-signed: click **Run anyway** (on some versions of Windows, click **More info** first). Some antivirus products may also flag unsigned installers. The installer is built by GitHub Actions directly from this repository's source and tested on Windows before release.
+Windows SmartScreen may warn because the installer isn't code-signed: click **Run anyway** (on some versions of Windows, click **More info** first). Some antivirus products may also flag unsigned installers. The installer is built by GitHub Actions directly from this repository's source and tested on Windows before release. Problems and suggestions: use the repository's private reporting form (Security tab → Report a vulnerability).
 
 ### Features
 - Separate refresh rate for **plugged in** and **on battery** for each display, chosen from the rates it supports

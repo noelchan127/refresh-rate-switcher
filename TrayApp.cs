@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -30,6 +31,7 @@ namespace RefreshRateSwitcher
         readonly DisplayCache _displayCache;
         (int hz, int argb, int size) _iconDrawn;   // what the tray icon currently shows
         int _retries;   // follow-up passes scheduled for failed changes or rates not reported yet
+        long _notifyTicks;   // test mode: time spent in Windows showing notifications during one Apply
 
         // Power source the rates were last applied for. Battery-percentage notifications arrive as
         // the same event as plugging in or unplugging; only a real change re-applies the rates.
@@ -46,14 +48,27 @@ namespace RefreshRateSwitcher
         readonly RegisteredWaitHandle _exitWait;
         readonly Control _uiInvoker = new Control();
 
-        public TrayApp(bool background)
+        // Test-only (--test-power <file>, used by CI): the power source and power events come from a file
+        // instead of Windows, because the test machines have no battery. Never used by a normal start.
+        readonly TestPower _testPower;
+
+        public TrayApp(bool background, string testPowerFile = null)
         {
-            _settings = Settings.Load();
+            if (testPowerFile != null)
+                _testPower = new TestPower(testPowerFile, mode =>
+                {
+                    try { _uiInvoker.BeginInvoke((Action)(() => HandlePowerEvent(mode))); } catch { }
+                });
+            _settings = Settings.LoadOrDefaults();
             bool firstRun = _settings.FirstRun;
             _displayCache = new DisplayCache(() =>
             {
                 var list = NativeDisplay.GetDisplays();
-                if (_settings.BindKeys(list)) Save();
+                // Settings exist as soon as a display is seen, so the menu and window can change them
+                // straight away (not only after the next re-apply)
+                bool changed = _settings.BindKeys(list);
+                changed |= _settings.EnsureDisplays(list, _displayCache.Rates);
+                if (changed) Save();
                 return list;
             }, d => NativeDisplay.GetSupportedRates(d.DeviceName));
 
@@ -81,7 +96,7 @@ namespace RefreshRateSwitcher
 
             // Fix an out-of-date startup entry (exe moved, or written by 1.1.x without --background).
             // Never creates one: whether to start with Windows is chosen in the installer or the app.
-            try { if (Settings.StartupEntryNeedsRepair) Settings.StartupEnabled = true; } catch { }
+            try { if (Settings.StartupEntryNeedsRepair) Settings.RepairStartupEntry(); } catch { }
 
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
@@ -100,7 +115,8 @@ namespace RefreshRateSwitcher
         public Settings Settings => _settings;
 
         // Unknown (e.g. desktops without a battery) is treated as plugged in
-        public bool OnAC => SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Offline;
+        public bool OnAC => _testPower != null ? _testPower.OnAC
+                          : SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Offline;
 
         /// <summary>Connected displays, each keyed to the settings it was saved under (shared: read-only).</summary>
         public List<DisplayInfo> Displays() => _displayCache.Displays();
@@ -119,7 +135,7 @@ namespace RefreshRateSwitcher
             if (ds == null) return;
             ds.Managed = on;
             Save();
-            Apply("manual");
+            Apply("manual", key);
         }
 
         public void SetRate(string key, bool forAC, int hz)
@@ -128,7 +144,10 @@ namespace RefreshRateSwitcher
             if (ds == null) return;
             if (forAC) ds.PluggedInHz = hz; else ds.BatteryHz = hz;
             Save();
-            Apply("manual");
+            // Only this display is set again, and only if the rate is for the current power state:
+            // a rate picked in Windows for this or another display otherwise stays
+            if (forAC == OnAC) Apply("manual", key);
+            else { UpdateIcon(); _form?.RefreshState(); }
         }
 
         public void SetNotifications(bool on)
@@ -179,15 +198,23 @@ namespace RefreshRateSwitcher
 
         void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
+            if (_testPower == null) HandlePowerEvent(e.Mode);
+        }
+
+        void HandlePowerEvent(PowerModes mode)
+        {
             // StatusChange fires for AC/DC changes and also battery % changes: Apply() checks which.
             // Resume: some drivers reset the mode after sleep, so re-apply after a short delay.
-            if (e.Mode == PowerModes.StatusChange) Schedule("power status", 1500);
-            else if (e.Mode == PowerModes.Resume) { _displayCache.Invalidate(); Schedule("resume", 4000); }
+            if (mode == PowerModes.StatusChange) Schedule("power status", 1500);
+            else if (mode == PowerModes.Resume) { _displayCache.Invalidate(); Schedule("resume", 4000); }
         }
 
         void OnDisplaySettingsChanged(object sender, EventArgs e)
         {
             _displayCache.Invalidate();
+            // Forget displays that are gone now, not only when the re-apply runs: a monitor that
+            // disconnects and comes back within the wait is then set again
+            try { _cache.KeepOnly(Displays().Select(d => d.Key)); } catch { }
             UpdateIcon();
             _form?.RefreshState();
             Schedule("display change", 2000);
@@ -205,10 +232,15 @@ namespace RefreshRateSwitcher
         internal static string ResolveReason(string reason, bool ac, bool lastAC) =>
             reason != "power status" ? reason : ac != lastAC ? "power change" : "display change";
 
+        /// <summary>Which pending re-apply wins: wake > power notification > display change / retry.</summary>
+        internal static int Rank(string reason) =>
+            reason == "resume" ? 3 : reason == "power status" ? 2 : reason == "" ? 0 : 1;
+
         void Schedule(string reason, int ms)
         {
-            // A pending power/resume re-apply outranks a display-change one
-            if (!FullApply(reason) && _pendingReason != "" && FullApply(_pendingReason)) return;
+            // Windows often sends a battery-% notification right after waking: it mustn't replace the
+            // pending wake re-apply (which would then be skipped as "nothing changed")
+            if (Rank(reason) < Rank(_pendingReason)) return;
             _pendingReason = reason;
             _debounce.Stop();
             _debounce.Interval = ms;
@@ -217,8 +249,11 @@ namespace RefreshRateSwitcher
 
         // ------------------------------------------------------------------ core
 
-        void Apply(string reason)
+        /// <param name="onlyKey">A change made in the app to one display: only that display is set again.</param>
+        void Apply(string reason, string onlyKey = null)
         {
+            long started = System.Diagnostics.Stopwatch.GetTimestamp(), driverTicks = 0;
+            _notifyTicks = 0;
             List<DisplayInfo> displays;
             try { displays = Displays(); }
             catch { return; }
@@ -226,12 +261,16 @@ namespace RefreshRateSwitcher
             if (_settings.EnsureDisplays(displays, Rates)) Save();
 
             bool ac = OnAC;
+            bool sourceChanged = ac != _lastAC;
             reason = ResolveReason(reason, ac, _lastAC);
             _lastAC = ac;
 
-            bool displayChange = !FullApply(reason);
+            bool displayChange = !FullApply(reason) || onlyKey != null;
             if (displayChange)
+            {
                 _cache.KeepOnly(displays.Select(d => d.Key));   // unplugged monitors are set again when reconnected
+                if (onlyKey != null) _cache.Forget(onlyKey);
+            }
             else
             {
                 _cache.Clear();
@@ -250,30 +289,34 @@ namespace RefreshRateSwitcher
                     if (wanted <= 0) { retry = true; continue; }   // driver hasn't reported rates yet
 
                     int target = NativeDisplay.Nearest(Rates(d), wanted);
-                    if (displayChange && _cache.Skip(d.Key, target, ac)) continue;
+                    if (displayChange && _cache.Skip(d.Key, d.DeviceName, target, ac)) continue;
 
                     string err = null;
                     if (d.CurrentHz != target)
                     {
+                        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                         err = NativeDisplay.SetRate(d.DeviceName, target);
+                        driverTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
                         _displayCache.InvalidateDisplays();   // the icon and window should show the new rate
                     }
                     if (err == null)
                     {
-                        _cache.Succeeded(d.Key, target, ac);
+                        _cache.Succeeded(d.Key, d.DeviceName, target, ac);
                         if (d.CurrentHz != target)
                             changed.Add(displays.Count > 1 ? $"{d.Name}: {target} Hz" : $"Refresh rate set to {target} Hz");
                     }
                     else
                     {
-                        int tries = _cache.Failed(d.Key, target, ac);
+                        int tries = _cache.Failed(d.Key, d.DeviceName, target, ac);
                         if (tries < ApplyCache.MaxTries) retry = true;
                         if (tries == 1 || !displayChange)   // warn once, not on every retry
                             Notify("Couldn't change refresh rate", $"{d.Name}: {target} Hz – {err}", ToolTipIcon.Warning, force: true);
                     }
                 }
 
-                if (changed.Count > 0 && (reason == "power change" || reason == "manual" || reason == "enabled"))
+                // Also when the power source changed during sleep (the wake re-apply handles that)
+                if (changed.Count > 0 && (reason == "power change" || reason == "manual" || reason == "enabled" ||
+                                          (reason == "resume" && sourceChanged)))
                     Notify(AppInfo.StateName(ac), string.Join("\n", changed));
             }
 
@@ -284,12 +327,22 @@ namespace RefreshRateSwitcher
 
             UpdateIcon();
             _form?.RefreshState();
+            if (_testPower != null)
+            {
+                long total = System.Diagnostics.Stopwatch.GetTimestamp() - started, f = System.Diagnostics.Stopwatch.Frequency;
+                _testPower.Log($"applied {reason} in {(total - driverTicks - _notifyTicks) * 1000 / f} ms " +
+                               $"(+{driverTicks * 1000 / f} ms driver, +{_notifyTicks * 1000 / f} ms notification): " + string.Join(", ", displays.Select(d => $"{d.Key}={d.CurrentHz}")) +
+                               (changed.Count > 0 ? " -> " + string.Join("; ", changed) : ""));
+            }
         }
 
         void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false)
         {
             if (!_settings.Notifications && !force) return;
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            _testPower?.Log($"notify {icon}: {title} | {text.Replace("\n", " / ")}");
             _tray.ShowBalloonTip(3000, title, text, icon);
+            _notifyTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         }
 
         void ShowMenu()
@@ -393,6 +446,7 @@ namespace RefreshRateSwitcher
             _showEvent.Dispose();
             _exitWait.Unregister(null);
             _exitEvent.Dispose();
+            _testPower?.Dispose();
             _uiInvoker.Dispose();
             _tray.Visible = false;
             _tray.Dispose();
@@ -409,32 +463,43 @@ namespace RefreshRateSwitcher
     /// rate the user picks in Windows Settings isn't fought over and a driver that reports a slightly
     /// different rate can't cause a loop. Only a change that worked counts as set: one the driver
     /// refused (e.g. mid-dock) is tried again on later events, up to MaxTries times, so a driver that
-    /// keeps refusing can't cause a stream of warnings. A power change or manual change starts afresh.
+    /// keeps refusing can't cause a stream of warnings. A power change starts afresh.
+    /// Each entry also remembers the display's Windows device name (\\.\DISPLAYn): a monitor that
+    /// disconnects and reconnects gets a new one, and comes back at its default rate, so it's set again.
     /// </summary>
     internal sealed class ApplyCache
     {
         public const int MaxTries = 3;
-        readonly Dictionary<string, (int hz, bool ac)> _applied = new Dictionary<string, (int, bool)>(StringComparer.OrdinalIgnoreCase);
-        readonly Dictionary<string, (int hz, bool ac, int tries)> _failed = new Dictionary<string, (int, bool, int)>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, (string dev, int hz, bool ac)> _applied = new Dictionary<string, (string, int, bool)>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, (string dev, int hz, bool ac, int tries)> _failed = new Dictionary<string, (string, int, bool, int)>(StringComparer.OrdinalIgnoreCase);
+
+        static bool Same(string a, string b) => string.Equals(a ?? "", b ?? "", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>True if a display-change event should leave this display alone.</summary>
-        public bool Skip(string key, int hz, bool ac) =>
-            (_applied.TryGetValue(key, out var a) && a.hz == hz && a.ac == ac) ||
-            (_failed.TryGetValue(key, out var f) && f.hz == hz && f.ac == ac && f.tries >= MaxTries);
+        public bool Skip(string key, string dev, int hz, bool ac) =>
+            (_applied.TryGetValue(key, out var a) && Same(a.dev, dev) && a.hz == hz && a.ac == ac) ||
+            (_failed.TryGetValue(key, out var f) && Same(f.dev, dev) && f.hz == hz && f.ac == ac && f.tries >= MaxTries);
 
-        public void Succeeded(string key, int hz, bool ac)
+        public void Succeeded(string key, string dev, int hz, bool ac)
         {
-            _applied[key] = (hz, ac);
+            _applied[key] = (dev, hz, ac);
             _failed.Remove(key);
         }
 
         /// <summary>Records a refused change; returns how many times in a row this target has failed.</summary>
-        public int Failed(string key, int hz, bool ac)
+        public int Failed(string key, string dev, int hz, bool ac)
         {
-            int tries = _failed.TryGetValue(key, out var f) && f.hz == hz && f.ac == ac ? f.tries + 1 : 1;
-            _failed[key] = (hz, ac, tries);
+            int tries = _failed.TryGetValue(key, out var f) && Same(f.dev, dev) && f.hz == hz && f.ac == ac ? f.tries + 1 : 1;
+            _failed[key] = (dev, hz, ac, tries);
             _applied.Remove(key);
             return tries;
+        }
+
+        /// <summary>The user changed this display's settings in the app: set it again.</summary>
+        public void Forget(string key)
+        {
+            _applied.Remove(key);
+            _failed.Remove(key);
         }
 
         public void KeepOnly(IEnumerable<string> connectedKeys)
@@ -449,6 +514,72 @@ namespace RefreshRateSwitcher
             _applied.Clear();
             _failed.Clear();
         }
+    }
+
+    /// <summary>
+    /// Test-only power source for CI machines, which have no battery. The file holds one line:
+    /// "ac" or "battery", optionally followed by "resume" (woke from sleep) or "tick" (battery-%
+    /// update, same source) and a number to make each write unique, e.g. "battery tick 3".
+    /// Each time the file is rewritten the app reacts as it would to the real
+    /// Windows event. What the app does is written to a .log file next to it.
+    /// </summary>
+    internal sealed class TestPower : IDisposable
+    {
+        readonly string _file, _log;
+        readonly FileSystemWatcher _watch;
+        readonly Action<PowerModes> _raise;
+        readonly object _lock = new object();
+        string _last = "";
+        public bool OnAC { get; private set; } = true;
+
+        public TestPower(string file, Action<PowerModes> raise)
+        {
+            _file = Path.GetFullPath(file);
+            _log = Path.ChangeExtension(_file, ".log");
+            _raise = raise;
+            if (!File.Exists(_file)) File.WriteAllText(_file, "ac");
+            Read(out _);
+            Log("test power source: " + (OnAC ? "ac" : "battery"));
+            _watch = new FileSystemWatcher(Path.GetDirectoryName(_file), Path.GetFileName(_file))
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
+            };
+            _watch.Changed += (s, e) => Changed();
+            _watch.Created += (s, e) => Changed();
+            _watch.Renamed += (s, e) => Changed();
+            _watch.EnableRaisingEvents = true;
+        }
+
+        bool Read(out string text)
+        {
+            text = null;
+            for (int i = 0; i < 10; i++)
+            {
+                try { text = File.ReadAllText(_file).Trim().ToLowerInvariant(); break; }
+                catch (IOException) { Thread.Sleep(50); }
+            }
+            if (string.IsNullOrEmpty(text)) return false;
+            OnAC = !text.StartsWith("battery");
+            return true;
+        }
+
+        void Changed()
+        {
+            lock (_lock)
+            {
+                if (!Read(out var text) || text == _last) return;   // one write can raise several events
+                _last = text;
+                Log("power event: " + text);
+                _raise(text.Contains("resume") ? PowerModes.Resume : PowerModes.StatusChange);
+            }
+        }
+
+        public void Log(string line)
+        {
+            try { lock (_lock) File.AppendAllText(_log, $"{DateTime.Now:HH:mm:ss.fff} {line}\r\n"); } catch { }
+        }
+
+        public void Dispose() => _watch.Dispose();
     }
 
     internal static class MemoryTrim

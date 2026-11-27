@@ -18,20 +18,12 @@ namespace RefreshRateSwitcher
         // Command line:
         //   (none)              start (or bring up the running copy) and open the settings window
         //   --background        start in the tray only – used by the "Start with Windows" entry
-        //   --uninstall         remove the startup entry and saved settings
         //   --selftest <dir>    run built-in checks, write results to <dir> and exit (used by CI)
+        //   --test-power <file> CI only: take the power source from <file> (test machines have no battery)
         [STAThread]
         static int Main(string[] args)
         {
             bool Has(string a) => args.Any(x => x.Equals(a, StringComparison.OrdinalIgnoreCase));
-
-            if (Has("--uninstall"))
-            {
-                try { Settings.StartupEnabled = false; } catch { }
-                try { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(Settings.KeyPath, false); } catch { }
-                MessageBox.Show("Startup entry and settings removed.", AppInfo.Name);
-                return 0;
-            }
 
             if (Has("--selftest"))
             {
@@ -43,6 +35,8 @@ namespace RefreshRateSwitcher
             }
 
             bool background = Has(Settings.BackgroundArg);
+            int tp = Array.FindIndex(args, x => x.Equals("--test-power", StringComparison.OrdinalIgnoreCase));
+            string testPower = tp >= 0 && tp + 1 < args.Length ? args[tp + 1] : null;
 
             using (var mutex = new Mutex(true, @"Local\RefreshRateSwitcher_SingleInstance", out bool isNew))
             {
@@ -69,16 +63,32 @@ namespace RefreshRateSwitcher
                 // note it in %TEMP%\RefreshRateSwitcher-errors.log and carry on
                 Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
                 Application.ThreadException += (s, e) => LogError(e.Exception);
-                Application.Run(new TrayApp(background));
+                AppDomain.CurrentDomain.UnhandledException += (s, e) => LogError(e.ExceptionObject as Exception);
+
+                TrayApp app;
+                try { app = new TrayApp(background, testPower); }
+                catch (Exception ex)
+                {
+                    // Starting up failed (outside the message loop, so nothing else would catch it)
+                    LogError(ex);
+                    MessageBox.Show("Refresh Rate Switcher couldn't start:\n" + ex.Message +
+                                    "\n\nDetails were saved to " + ErrorLogPath, AppInfo.Name,
+                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return 1;
+                }
+                Application.Run(app);
             }
             return 0;
         }
 
+        internal static string ErrorLogPath => System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RefreshRateSwitcher-errors.log");
+
         internal static void LogError(Exception ex)
         {
+            if (ex == null) return;
             try
             {
-                var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RefreshRateSwitcher-errors.log");
+                var path = ErrorLogPath;
                 var info = new System.IO.FileInfo(path);
                 if (info.Exists && info.Length > 256 * 1024) info.Delete();   // keep it small
                 System.IO.File.AppendAllText(path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {AppInfo.Name} {AppInfo.Version}\r\n{ex}\r\n\r\n");

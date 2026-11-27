@@ -40,6 +40,8 @@ namespace RefreshRateSwitcher
             public CheckBox Managed;
             public ComboBox AC, Battery;
             public Label Info;
+            public string Title;
+            public List<int> Rates;   // what the drop-downs offer
         }
 
         sealed class RateItem
@@ -113,12 +115,16 @@ namespace RefreshRateSwitcher
             _aboutBody = Column();
             _aboutBody.Controls.Add(new Label { Text = AppInfo.Name, AutoSize = true, Font = _titleFont, Margin = new Padding(3, 0, 3, 0) });
             _aboutBody.Controls.Add(new Label { Text = "Version " + AppInfo.Version, AutoSize = true, Margin = new Padding(3, 2, 3, 10) });
+            _aboutBody.Controls.Add(new Label { Text = AppInfo.Copyright, AutoSize = true, Margin = new Padding(3, 2, 3, 2) });
             _aboutBody.Controls.Add(Link("Made by ", AppInfo.Author, "", AppInfo.AuthorUrl));
-            _aboutBody.Controls.Add(Link("Licence: ", AppInfo.License, "", AppInfo.LicenseUrl));
+            // The licence installed next to the app opens without internet; otherwise the copy on GitHub
+            string localLicense = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Application.ExecutablePath), "LICENSE.txt");
+            _aboutBody.Controls.Add(Link("Licence: ", AppInfo.License, "", System.IO.File.Exists(localLicense) ? localLicense : AppInfo.LicenseUrl));
             _aboutBody.Controls.Add(Wrap("Free, open-source software provided without any warranty. " +
                                          "You may share and modify it under the licence terms.", grey: true));
             _aboutBody.Controls.Add(Link("Updates: ", "download the latest version", "", AppInfo.ReleasesUrl, top: 10));
-            _aboutBody.Controls.Add(Link("Source code and bug reports: ", "GitHub", "", AppInfo.RepoUrl));
+            _aboutBody.Controls.Add(Link("Source code: ", "GitHub", "", AppInfo.RepoUrl));
+            _aboutBody.Controls.Add(Link("Found a problem? ", "Report it privately", " on GitHub", AppInfo.ReportUrl));
             _aboutBody.Controls.Add(Wrap("The app never connects to the internet. Links open in your browser, " +
                                          "and updates are installed by running the new installer.", grey: true));
             var copy = new Button { Text = "Copy system info", AutoSize = true, Margin = new Padding(3, 10, 3, 0) };
@@ -128,7 +134,7 @@ namespace RefreshRateSwitcher
                 catch { copy.Text = "Couldn't copy"; }
             };
             _aboutBody.Controls.Add(copy);
-            _aboutBody.Controls.Add(Wrap("Paste this into a bug report so I can see your display setup.", grey: true));
+            _aboutBody.Controls.Add(Wrap("Paste this into your report so I can see your display setup.", grey: true));
 
             // ---------- Window ----------
             _settingsPage = new TabPage("Settings") { UseVisualStyleBackColor = true, Padding = Padding.Empty, AutoScroll = true };
@@ -230,7 +236,8 @@ namespace RefreshRateSwitcher
 
             foreach (var d in displays)
             {
-                var row = new DisplayRow { Box = Group(d.Name + (d.IsPrimary && displays.Count > 1 ? "  (primary)" : "")) };
+                string title = BoxTitle(d, displays.Count);
+                var row = new DisplayRow { Box = Group(title), Title = title };
                 var t = new TableLayoutPanel
                 {
                     AutoSize = true,
@@ -249,6 +256,7 @@ namespace RefreshRateSwitcher
                 row.AC = RateCombo();
                 row.Battery = RateCombo();
                 var rates = _host.Rates(d);
+                row.Rates = rates.ToList();
                 foreach (var hz in rates.OrderByDescending(r => r))
                 {
                     row.AC.Items.Add(new RateItem { Hz = hz });
@@ -274,6 +282,8 @@ namespace RefreshRateSwitcher
             _displaysPanel.ResumeLayout(true);
         }
 
+        static string BoxTitle(DisplayInfo d, int count) => d.Name + (d.IsPrimary && count > 1 ? "  (primary)" : "");
+
         void LoadState()
         {
             _loading = true;
@@ -295,13 +305,18 @@ namespace RefreshRateSwitcher
                     bool managed = ds != null && ds.Managed;
                     row.Managed.Checked = managed;
                     bool hasRates = row.AC.Items.Count > 0;
-                    row.AC.Enabled = row.Battery.Enabled = managed && hasRates && s.Enabled;
+                    // Rates can be chosen while auto-switch is off, ready for when it's turned on
+                    row.AC.Enabled = row.Battery.Enabled = managed && hasRates;
                     if (!row.AC.DroppedDown) Select(row.AC, ds?.PluggedInHz ?? 0);
                     if (!row.Battery.DroppedDown) Select(row.Battery, ds?.BatteryHz ?? 0);
 
+                    int wanted = ds == null ? 0 : (ac ? ds.PluggedInHz : ds.BatteryHz);
+                    int target = wanted > 0 ? NativeDisplay.Nearest(row.Rates, wanted) : 0;
                     string state = !hasRates ? "no refresh rates reported by the driver"
                                  : !managed ? "not switched"
                                  : !s.Enabled ? "auto-switch is off"
+                                 : target > 0 && d.CurrentHz != target
+                                     ? $"changed outside this app; {target} Hz at the next plug-in or unplug"
                                  : "using the " + (ac ? "plugged-in" : "battery") + " rate";
                     row.Info.Text = $"Now {d.CurrentHz} Hz at {d.Width} × {d.Height} · {state}";
                 }
@@ -322,9 +337,11 @@ namespace RefreshRateSwitcher
         {
             if (IsDisposed) return;
             var displays = _host.Displays();
+            // Rebuild if displays came or went, a name changed, or a display's rate list changed
+            // (resolution changed, or a driver that had no rates has reported them since)
             bool sameDisplays = displays.Count == _rows.Count && displays.All(d => _rows.ContainsKey(d.Key)) &&
-                                // a driver that had no rates when the window opened has reported them since
-                                !displays.Any(d => _rows[d.Key].AC.Items.Count == 0 && _host.Rates(d).Count > 0);
+                                displays.All(d => _rows[d.Key].Title == BoxTitle(d, displays.Count) &&
+                                                  _rows[d.Key].Rates.SequenceEqual(_host.Rates(d)));
             if (!sameDisplays)
             {
                 SuspendLayout();

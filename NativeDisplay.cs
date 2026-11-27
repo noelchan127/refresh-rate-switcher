@@ -57,6 +57,7 @@ namespace RefreshRateSwitcher
         const int CDS_TEST = 0x02;
         const int DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 0x1;
         const int DISPLAY_DEVICE_PRIMARY_DEVICE = 0x4;
+        const int DM_INTERLACED = 0x2;
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         struct DEVMODE
@@ -95,6 +96,7 @@ namespace RefreshRateSwitcher
 
         // ---------------- user32: CCD API (to find the built-in panel) ----------------
         const uint QDC_ONLY_ACTIVE_PATHS = 2;
+        const int ERROR_INSUFFICIENT_BUFFER = 122;
         const int DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1;
         const int DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME = 2;
         const uint TARGET_NAME_EDID_IDS_VALID = 0x4;
@@ -179,10 +181,19 @@ namespace RefreshRateSwitcher
             var result = new Dictionary<string, List<TargetInfo>>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, out uint np, out uint nm) != 0) return result;
-                var paths = new DISPLAYCONFIG_PATH_INFO[np];
-                var modes = new DISPLAYCONFIG_MODE_INFO[nm];
-                if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, ref np, paths, ref nm, modes, IntPtr.Zero) != 0) return result;
+                // The display setup can change between the two calls (docking, plugging in, waking):
+                // Windows then says the buffers are too small, so ask for the sizes again
+                DISPLAYCONFIG_PATH_INFO[] paths = null;
+                uint np = 0, nm = 0;
+                for (int attempt = 0; ; attempt++)
+                {
+                    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, out np, out nm) != 0) return result;
+                    paths = new DISPLAYCONFIG_PATH_INFO[np];
+                    var modes = new DISPLAYCONFIG_MODE_INFO[nm];
+                    int r = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, ref np, paths, ref nm, modes, IntPtr.Zero);
+                    if (r == 0) break;
+                    if (r != ERROR_INSUFFICIENT_BUFFER || attempt >= 4) return result;
+                }
                 for (int i = 0; i < np; i++)
                 {
                     var src = new DISPLAYCONFIG_SOURCE_DEVICE_NAME
@@ -336,7 +347,8 @@ namespace RefreshRateSwitcher
                 var dm = NewDevMode();
                 if (!EnumDisplaySettings(deviceName, i, ref dm)) break;
                 if (dm.dmPelsWidth == cur.dmPelsWidth && dm.dmPelsHeight == cur.dmPelsHeight &&
-                    dm.dmBitsPerPel == cur.dmBitsPerPel && dm.dmDisplayFrequency > 1)
+                    dm.dmBitsPerPel == cur.dmBitsPerPel && dm.dmDisplayFrequency > 1 &&
+                    (dm.dmDisplayFlags & DM_INTERLACED) == 0)   // interlaced modes (e.g. 30i on TVs) aren't offered
                     rates.Add(dm.dmDisplayFrequency);
             }
             return rates.ToList();
@@ -384,7 +396,7 @@ namespace RefreshRateSwitcher
                 case -3: return "Unable to write settings to the registry.";
                 case -4: return "Invalid flags.";
                 case -5: return "Invalid parameter.";
-                case -6: return "Display settings are locked by another app or policy.";
+                case -6: return "Windows refused the change for this multi-display setup (DualView).";
                 default: return "Display change failed (code " + code + ").";
             }
         }

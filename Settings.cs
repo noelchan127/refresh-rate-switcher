@@ -29,6 +29,8 @@ namespace RefreshRateSwitcher
         const string DisplaysSub = "Displays";
         const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunValueName = "RefreshRateSwitcher";
+        // Windows' own on/off switch for startup apps (Task Manager → Startup apps, Settings → Apps → Startup)
+        const string ApprovedKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
         public const string BackgroundArg = "--background";
 
         public bool Enabled = true;
@@ -52,8 +54,8 @@ namespace RefreshRateSwitcher
             {
                 if (k == null) return s;
                 s.FirstRun = false;
-                s.Enabled = Convert.ToInt32(k.GetValue("Enabled", 1)) != 0;
-                s.Notifications = Convert.ToInt32(k.GetValue("Notifications", 1)) != 0;
+                s.Enabled = ReadInt(k, "Enabled", 1) != 0;
+                s.Notifications = ReadInt(k, "Notifications", 1) != 0;
 
                 using (var dk = k.OpenSubKey(DisplaysSub))
                 {
@@ -61,34 +63,63 @@ namespace RefreshRateSwitcher
                     {
                         foreach (var name in dk.GetSubKeyNames())
                         {
-                            using (var e = dk.OpenSubKey(name))
+                            try
                             {
-                                if (e == null) continue;
-                                var ds = new DisplaySettings
+                                using (var e = dk.OpenSubKey(name))
                                 {
-                                    Key = (e.GetValue("Key") as string) ?? name,
-                                    Name = (e.GetValue("Name") as string) ?? "",
-                                    Managed = Convert.ToInt32(e.GetValue("Managed", 0)) != 0,
-                                    PluggedInHz = Convert.ToInt32(e.GetValue("PluggedInHz", 0)),
-                                    BatteryHz = Convert.ToInt32(e.GetValue("BatteryHz", 0)),
-                                };
-                                // 1.2.0/1.2.1 didn't save the port, but put it in the ID of identical monitors
-                                ds.Port = (e.GetValue("Port") as string) ?? PortFromKey(ds.Key);
-                                s.Displays[ds.Key] = ds;
+                                    if (e == null) continue;
+                                    var ds = new DisplaySettings
+                                    {
+                                        Key = (e.GetValue("Key") as string) ?? name,
+                                        Name = (e.GetValue("Name") as string) ?? "",
+                                        Managed = ReadInt(e, "Managed", 0) != 0,
+                                        PluggedInHz = ReadInt(e, "PluggedInHz", 0),
+                                        BatteryHz = ReadInt(e, "BatteryHz", 0),
+                                    };
+                                    // 1.2.0/1.2.1 didn't save the port, but put it in the ID of identical monitors
+                                    ds.Port = (e.GetValue("Port") as string) ?? PortFromKey(ds.Key);
+                                    s.Displays[ds.Key] = ds;
+                                }
                             }
+                            catch { /* an unreadable entry is skipped: the display gets new settings */ }
                         }
                     }
                     else if (k.GetValue("PluggedInHz") != null || k.GetValue("BatteryHz") != null)
                     {
                         // Settings from 1.1.x – kept in the registry (so a downgrade still works) and migrated below
                         s._hasLegacy = true;
-                        s._legacyPluggedIn = Convert.ToInt32(k.GetValue("PluggedInHz", 0));
-                        s._legacyBattery = Convert.ToInt32(k.GetValue("BatteryHz", 0));
+                        s._legacyPluggedIn = ReadInt(k, "PluggedInHz", 0);
+                        s._legacyBattery = ReadInt(k, "BatteryHz", 0);
                         s._legacyDisplay = (k.GetValue("Display", "auto") as string) ?? "auto";
                     }
                 }
             }
             return s;
+        }
+
+        /// <summary>A number from the registry; a missing, damaged or hand-edited value gives the default.</summary>
+        internal static int ReadInt(RegistryKey k, string name, int fallback)
+        {
+            try
+            {
+                var v = k.GetValue(name);
+                if (v is int i) return i;
+                if (v is long l && l >= int.MinValue && l <= int.MaxValue) return (int)l;
+                if (v is string str && int.TryParse(str.Trim(), out int p)) return p;
+            }
+            catch { }
+            return fallback;
+        }
+
+        /// <summary>Load, or start from defaults if the saved settings can't be read at all (logged).</summary>
+        public static Settings LoadOrDefaults()
+        {
+            try { return Load(); }
+            catch (Exception ex)
+            {
+                Program.LogError(ex);
+                return new Settings { FirstRun = false };
+            }
         }
 
         public void Save()
@@ -272,13 +303,18 @@ namespace RefreshRateSwitcher
         // ---------- Start with Windows (per-user Run key, no admin needed) ----------
         static string StartupCommand => "\"" + Application.ExecutablePath + "\" " + BackgroundArg;
 
+        /// <summary>
+        /// On only if the Run entry points at this copy and Windows' Startup apps switch isn't off.
+        /// Turning it on also clears that switch; turning it off removes both.
+        /// </summary>
         public static bool StartupEnabled
         {
             get
             {
                 var v = RunValue();
                 return !string.IsNullOrEmpty(v) &&
-                       v.IndexOf(Application.ExecutablePath, StringComparison.OrdinalIgnoreCase) >= 0;
+                       v.IndexOf(Application.ExecutablePath, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                       !DisabledInWindows(ApprovedValue());
             }
             set
             {
@@ -287,7 +323,33 @@ namespace RefreshRateSwitcher
                     if (value) k.SetValue(RunValueName, StartupCommand);
                     else k.DeleteValue(RunValueName, false);
                 }
+                // No entry here means "enabled" to Windows; an old "disabled" one would keep it off
+                using (var a = Registry.CurrentUser.OpenSubKey(ApprovedKeyPath, true))
+                    a?.DeleteValue(RunValueName, false);
             }
+        }
+
+        /// <summary>Rewrites an out-of-date Run entry. Leaves Windows' Startup apps switch as the user set it.</summary>
+        public static void RepairStartupEntry()
+        {
+            using (var k = Registry.CurrentUser.CreateSubKey(RunKeyPath))
+                k.SetValue(RunValueName, StartupCommand);
+        }
+
+        /// <summary>
+        /// Windows stores the Startup apps switch as 12 bytes; an odd first byte (3, 7…) means it was
+        /// turned off, an even one (2, 6) or no value means on.
+        /// </summary>
+        internal static bool DisabledInWindows(byte[] approved) => approved != null && approved.Length > 0 && (approved[0] & 1) != 0;
+
+        static byte[] ApprovedValue()
+        {
+            try
+            {
+                using (var k = Registry.CurrentUser.OpenSubKey(ApprovedKeyPath))
+                    return k?.GetValue(RunValueName) as byte[];
+            }
+            catch { return null; }
         }
 
         /// <summary>

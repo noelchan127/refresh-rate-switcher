@@ -14,8 +14,9 @@ and needs no admin rights or internet access.
 > starts, before you open its settings, which turns DRR ("Dynamic (xx Hz)") off. If you rely on DRR, don't
 > install it. See [Known limitations](#known-limitations) for how to restore DRR.
 
-This is a one-person hobby project I made to fix a personal annoyance. I'll look at issues and suggestions
-when I can, but please forgive me if I'm slow to respond.
+This is a one-person hobby project I made to fix a personal annoyance. To report a problem or make a
+suggestion, use GitHub's [private reporting form](../../security/advisories/new) (only I can see it; there's
+no public issue tracker). I'll look at reports when I can, but please forgive me if I'm slow to respond.
 
 ## Install
 Download `RefreshRateSwitcher-Setup-<version>.exe` from the [latest release](../../releases/latest) and run it. It installs per-user (no admin) to
@@ -44,6 +45,11 @@ The installer and app are **not code-signed**, so Windows may warn you the first
 Every release is built by [GitHub Actions](../../actions/workflows/release.yml) directly from the source in
 this repository, so you can see exactly what went into it. If you'd rather not trust a pre-built binary,
 [build it from source](#build-from-source).
+
+To check that a download is genuine (1.2.3 and later): each release lists the installer's SHA-256
+checksum in `SHA256SUMS.txt` (compare it with `Get-FileHash RefreshRateSwitcher-Setup-<version>.exe` in
+PowerShell), and carries a signed record that GitHub Actions built it from this repository
+(`gh attestation verify RefreshRateSwitcher-Setup-<version>.exe --repo noelchan127/refresh-rate-switcher`).
 
 ## Use
 The tray icon shows the current refresh rate: **blue** when plugged in, **amber** on battery, **grey** when auto-switch is off.
@@ -114,10 +120,13 @@ Installer: `makensis installer.nsi` (NSIS 3) after building; output goes to `out
 Tests: `RefreshRateSwitcher.exe --selftest <folder>` checks the Windows display APIs on your machine
 (without changing anything), the settings logic and the window layout, and writes a report and preview
 images to the folder. GitHub Actions also runs [`.github/scripts/test-windows.ps1`](.github/scripts/test-windows.ps1),
-which installs, upgrades, runs and uninstalls the app on Windows for every change.
+which installs, upgrades, runs and uninstalls the app on Windows for every change, and
+[`.github/scripts/test-hardware.ps1`](.github/scripts/test-hardware.ps1), which runs the app with virtual
+monitors (several refresh rates, plugged in and out) and a simulated charger, sleep and wake.
 
-## Security
-To report a security problem, please see [SECURITY.md](SECURITY.md). Don't post it in a public issue.
+## Reporting problems and security issues
+Bugs, suggestions and security problems all go through the same
+[private reporting form](../../security/advisories/new). See [SECURITY.md](SECURITY.md) for details.
 
 ## License
 Copyright (C) 2026 Noel Chan
