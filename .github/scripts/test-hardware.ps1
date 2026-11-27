@@ -183,20 +183,27 @@ Write-Host "`n== A second, identical monitor is plugged in and out (on AC)"
 Power 'ac'
 Check (Wait-Until { (VHz) -eq '165' }) "on AC: 165 Hz (now $(VHz))"
 $before = SavedDisplays
+# The driver reconnects both monitors, and they come back at 60 Hz, like a dock or monitor that blinks off
 Set-VirtualDisplayCount 2 | Out-Null
 Start-Sleep 6
 Show 'two identical monitors'
 $hz = @(Virtual | ForEach-Object Hz | Sort-Object)
-Check ($hz.Count -eq 2 -and ($hz -join ',') -eq '60,165') "first monitor keeps its 165 Hz, the new one is left alone at 60 Hz ($($hz -join ', '))"
+Check ($hz.Count -eq 2 -and ($hz -join ',') -eq '60,165') "first monitor is at its 165 Hz again after reconnecting, the new one is left alone at 60 Hz ($($hz -join ', '))"
 $now = SavedDisplays
 Check ($now.Count -eq $before.Count + 1) "settings added for the new monitor only ($($before.Count) → $($now.Count))"
 Check (@($now | Where-Object { $_.Managed -eq 1 -and $_.PluggedInHz -eq 165 }).Count -eq 1) 'exactly one monitor has the 165/60 Hz settings'
 $now | ForEach-Object { Note "saved: $($_.Key) switched=$($_.Managed) $($_.PluggedInHz)/$($_.BatteryHz) Hz port=$($_.Port)" }
 
+# Wait for the app to handle each power change before the next (a real unplug/replug within 1.5 s is
+# correctly treated as no change)
+$n = LogCount
 Power 'battery'
-Check (Wait-Until { ((Virtual | ForEach-Object Hz | Sort-Object) -join ',') -eq '60,60' }) "unplug with two monitors: switched one goes to 60 Hz ($(VHz))"
+Check (Wait-Until { LogHas $n 'applied power change' }) 'unplug with two monitors: handled as a power change'
+Check (((Virtual | ForEach-Object Hz | Sort-Object) -join ',') -eq '60,60') "…switched one at 60 Hz, the other untouched at 60 Hz ($(VHz))"
+$n = LogCount
 Power 'ac'
-Check (Wait-Until { ((Virtual | ForEach-Object Hz | Sort-Object) -join ',') -eq '60,165' }) "plug in with two monitors: only the switched one goes to 165 Hz ($(VHz))"
+Check (Wait-Until { LogHas $n 'applied power change' }) 'plug in with two monitors: handled as a power change'
+Check (((Virtual | ForEach-Object Hz | Sort-Object) -join ',') -eq '60,165') "…only the switched one goes to 165 Hz ($(VHz))"
 
 Write-Host "`n== Settings window with three displays"
 Start-Process $Exe -ArgumentList '--test-power', "`"$powerFile`"" -Wait   # second launch opens the running copy's window
