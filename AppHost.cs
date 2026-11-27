@@ -33,6 +33,9 @@ namespace RefreshRateSwitcher
         public const string RepoUrl = "https://github.com/noelchan127/refresh-rate-switcher";
         public const string ReleasesUrl = RepoUrl + "/releases/latest";
         public const string LicenseUrl = RepoUrl + "/blob/main/LICENSE";
+        // Private reports (bugs and security problems) go through GitHub's private reporting form
+        public const string ReportUrl = RepoUrl + "/security/advisories/new";
+        public const string Copyright = "Copyright © 2026 Noel Chan";
         public const string License = "GNU GPL v3.0 or later";
 
         public static string Version

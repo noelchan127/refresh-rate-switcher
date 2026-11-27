@@ -58,12 +58,16 @@ namespace RefreshRateSwitcher
                 {
                     try { _uiInvoker.BeginInvoke((Action)(() => HandlePowerEvent(mode))); } catch { }
                 });
-            _settings = Settings.Load();
+            _settings = Settings.LoadOrDefaults();
             bool firstRun = _settings.FirstRun;
             _displayCache = new DisplayCache(() =>
             {
                 var list = NativeDisplay.GetDisplays();
-                if (_settings.BindKeys(list)) Save();
+                // Settings exist as soon as a display is seen, so the menu and window can change them
+                // straight away (not only after the next re-apply)
+                bool changed = _settings.BindKeys(list);
+                changed |= _settings.EnsureDisplays(list, _displayCache.Rates);
+                if (changed) Save();
                 return list;
             }, d => NativeDisplay.GetSupportedRates(d.DeviceName));
 
@@ -91,7 +95,7 @@ namespace RefreshRateSwitcher
 
             // Fix an out-of-date startup entry (exe moved, or written by 1.1.x without --background).
             // Never creates one: whether to start with Windows is chosen in the installer or the app.
-            try { if (Settings.StartupEntryNeedsRepair) Settings.StartupEnabled = true; } catch { }
+            try { if (Settings.StartupEntryNeedsRepair) Settings.RepairStartupEntry(); } catch { }
 
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
@@ -130,7 +134,7 @@ namespace RefreshRateSwitcher
             if (ds == null) return;
             ds.Managed = on;
             Save();
-            Apply("manual");
+            Apply("manual", key);
         }
 
         public void SetRate(string key, bool forAC, int hz)
@@ -139,7 +143,10 @@ namespace RefreshRateSwitcher
             if (ds == null) return;
             if (forAC) ds.PluggedInHz = hz; else ds.BatteryHz = hz;
             Save();
-            Apply("manual");
+            // Only this display is set again, and only if the rate is for the current power state:
+            // a rate picked in Windows for this or another display otherwise stays
+            if (forAC == OnAC) Apply("manual", key);
+            else { UpdateIcon(); _form?.RefreshState(); }
         }
 
         public void SetNotifications(bool on)
@@ -204,6 +211,9 @@ namespace RefreshRateSwitcher
         void OnDisplaySettingsChanged(object sender, EventArgs e)
         {
             _displayCache.Invalidate();
+            // Forget displays that are gone now, not only when the re-apply runs: a monitor that
+            // disconnects and comes back within the wait is then set again
+            try { _cache.KeepOnly(Displays().Select(d => d.Key)); } catch { }
             UpdateIcon();
             _form?.RefreshState();
             Schedule("display change", 2000);
@@ -221,10 +231,15 @@ namespace RefreshRateSwitcher
         internal static string ResolveReason(string reason, bool ac, bool lastAC) =>
             reason != "power status" ? reason : ac != lastAC ? "power change" : "display change";
 
+        /// <summary>Which pending re-apply wins: wake > power notification > display change / retry.</summary>
+        internal static int Rank(string reason) =>
+            reason == "resume" ? 3 : reason == "power status" ? 2 : reason == "" ? 0 : 1;
+
         void Schedule(string reason, int ms)
         {
-            // A pending power/resume re-apply outranks a display-change one
-            if (!FullApply(reason) && _pendingReason != "" && FullApply(_pendingReason)) return;
+            // Windows often sends a battery-% notification right after waking: it mustn't replace the
+            // pending wake re-apply (which would then be skipped as "nothing changed")
+            if (Rank(reason) < Rank(_pendingReason)) return;
             _pendingReason = reason;
             _debounce.Stop();
             _debounce.Interval = ms;
@@ -233,8 +248,10 @@ namespace RefreshRateSwitcher
 
         // ------------------------------------------------------------------ core
 
-        void Apply(string reason)
+        /// <param name="onlyKey">A change made in the app to one display: only that display is set again.</param>
+        void Apply(string reason, string onlyKey = null)
         {
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
             List<DisplayInfo> displays;
             try { displays = Displays(); }
             catch { return; }
@@ -242,12 +259,16 @@ namespace RefreshRateSwitcher
             if (_settings.EnsureDisplays(displays, Rates)) Save();
 
             bool ac = OnAC;
+            bool sourceChanged = ac != _lastAC;
             reason = ResolveReason(reason, ac, _lastAC);
             _lastAC = ac;
 
-            bool displayChange = !FullApply(reason);
+            bool displayChange = !FullApply(reason) || onlyKey != null;
             if (displayChange)
+            {
                 _cache.KeepOnly(displays.Select(d => d.Key));   // unplugged monitors are set again when reconnected
+                if (onlyKey != null) _cache.Forget(onlyKey);
+            }
             else
             {
                 _cache.Clear();
@@ -266,7 +287,7 @@ namespace RefreshRateSwitcher
                     if (wanted <= 0) { retry = true; continue; }   // driver hasn't reported rates yet
 
                     int target = NativeDisplay.Nearest(Rates(d), wanted);
-                    if (displayChange && _cache.Skip(d.Key, target, ac)) continue;
+                    if (displayChange && _cache.Skip(d.Key, d.DeviceName, target, ac)) continue;
 
                     string err = null;
                     if (d.CurrentHz != target)
@@ -276,20 +297,22 @@ namespace RefreshRateSwitcher
                     }
                     if (err == null)
                     {
-                        _cache.Succeeded(d.Key, target, ac);
+                        _cache.Succeeded(d.Key, d.DeviceName, target, ac);
                         if (d.CurrentHz != target)
                             changed.Add(displays.Count > 1 ? $"{d.Name}: {target} Hz" : $"Refresh rate set to {target} Hz");
                     }
                     else
                     {
-                        int tries = _cache.Failed(d.Key, target, ac);
+                        int tries = _cache.Failed(d.Key, d.DeviceName, target, ac);
                         if (tries < ApplyCache.MaxTries) retry = true;
                         if (tries == 1 || !displayChange)   // warn once, not on every retry
                             Notify("Couldn't change refresh rate", $"{d.Name}: {target} Hz – {err}", ToolTipIcon.Warning, force: true);
                     }
                 }
 
-                if (changed.Count > 0 && (reason == "power change" || reason == "manual" || reason == "enabled"))
+                // Also when the power source changed during sleep (the wake re-apply handles that)
+                if (changed.Count > 0 && (reason == "power change" || reason == "manual" || reason == "enabled" ||
+                                          (reason == "resume" && sourceChanged)))
                     Notify(AppInfo.StateName(ac), string.Join("\n", changed));
             }
 
@@ -300,8 +323,12 @@ namespace RefreshRateSwitcher
 
             UpdateIcon();
             _form?.RefreshState();
-            _testPower?.Log($"applied {reason}: " + string.Join(", ", displays.Select(d => $"{d.Key}={d.CurrentHz}")) +
-                            (changed.Count > 0 ? " -> " + string.Join("; ", changed) : ""));
+            if (_testPower != null)
+            {
+                long ms = (System.Diagnostics.Stopwatch.GetTimestamp() - started) * 1000 / System.Diagnostics.Stopwatch.Frequency;
+                _testPower.Log($"applied {reason} in {ms} ms: " + string.Join(", ", displays.Select(d => $"{d.Key}={d.CurrentHz}")) +
+                               (changed.Count > 0 ? " -> " + string.Join("; ", changed) : ""));
+            }
         }
 
         void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false)
@@ -429,32 +456,43 @@ namespace RefreshRateSwitcher
     /// rate the user picks in Windows Settings isn't fought over and a driver that reports a slightly
     /// different rate can't cause a loop. Only a change that worked counts as set: one the driver
     /// refused (e.g. mid-dock) is tried again on later events, up to MaxTries times, so a driver that
-    /// keeps refusing can't cause a stream of warnings. A power change or manual change starts afresh.
+    /// keeps refusing can't cause a stream of warnings. A power change starts afresh.
+    /// Each entry also remembers the display's Windows device name (\\.\DISPLAYn): a monitor that
+    /// disconnects and reconnects gets a new one, and comes back at its default rate, so it's set again.
     /// </summary>
     internal sealed class ApplyCache
     {
         public const int MaxTries = 3;
-        readonly Dictionary<string, (int hz, bool ac)> _applied = new Dictionary<string, (int, bool)>(StringComparer.OrdinalIgnoreCase);
-        readonly Dictionary<string, (int hz, bool ac, int tries)> _failed = new Dictionary<string, (int, bool, int)>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, (string dev, int hz, bool ac)> _applied = new Dictionary<string, (string, int, bool)>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, (string dev, int hz, bool ac, int tries)> _failed = new Dictionary<string, (string, int, bool, int)>(StringComparer.OrdinalIgnoreCase);
+
+        static bool Same(string a, string b) => string.Equals(a ?? "", b ?? "", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>True if a display-change event should leave this display alone.</summary>
-        public bool Skip(string key, int hz, bool ac) =>
-            (_applied.TryGetValue(key, out var a) && a.hz == hz && a.ac == ac) ||
-            (_failed.TryGetValue(key, out var f) && f.hz == hz && f.ac == ac && f.tries >= MaxTries);
+        public bool Skip(string key, string dev, int hz, bool ac) =>
+            (_applied.TryGetValue(key, out var a) && Same(a.dev, dev) && a.hz == hz && a.ac == ac) ||
+            (_failed.TryGetValue(key, out var f) && Same(f.dev, dev) && f.hz == hz && f.ac == ac && f.tries >= MaxTries);
 
-        public void Succeeded(string key, int hz, bool ac)
+        public void Succeeded(string key, string dev, int hz, bool ac)
         {
-            _applied[key] = (hz, ac);
+            _applied[key] = (dev, hz, ac);
             _failed.Remove(key);
         }
 
         /// <summary>Records a refused change; returns how many times in a row this target has failed.</summary>
-        public int Failed(string key, int hz, bool ac)
+        public int Failed(string key, string dev, int hz, bool ac)
         {
-            int tries = _failed.TryGetValue(key, out var f) && f.hz == hz && f.ac == ac ? f.tries + 1 : 1;
-            _failed[key] = (hz, ac, tries);
+            int tries = _failed.TryGetValue(key, out var f) && Same(f.dev, dev) && f.hz == hz && f.ac == ac ? f.tries + 1 : 1;
+            _failed[key] = (dev, hz, ac, tries);
             _applied.Remove(key);
             return tries;
+        }
+
+        /// <summary>The user changed this display's settings in the app: set it again.</summary>
+        public void Forget(string key)
+        {
+            _applied.Remove(key);
+            _failed.Remove(key);
         }
 
         public void KeepOnly(IEnumerable<string> connectedKeys)

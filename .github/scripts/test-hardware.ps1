@@ -107,9 +107,21 @@ Check ((VHz) -eq '60') "…and its rate wasn't touched: $(VHz) Hz"
 $vKey = $vEntry.PSPath
 Set-ItemProperty $vKey Managed 1; Set-ItemProperty $vKey PluggedInHz 165; Set-ItemProperty $vKey BatteryHz 60
 
+# "Memory" in Task Manager's Processes tab = private working set
+function PrivateWS([int]$id) {
+  try { (Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "IDProcess=$id").WorkingSetPrivate } catch { 0 }
+}
+function Usage {
+  $p = (AppProcs)[0]; $p.Refresh()
+  [pscustomobject]@{ Private = PrivateWS $p.Id; Handles = $p.HandleCount; Threads = $p.Threads.Count; Cpu = $p.TotalProcessorTime }
+}
+
 # ------------------------------------------------------------------ power
 Write-Host "`n== Power source"
 StartApp
+Start-Sleep 3
+$u0 = Usage
+Note ("at start: {0:N1} MB memory (Task Manager), {1} handles, {2} threads" -f ($u0.Private / 1MB), $u0.Handles, $u0.Threads)
 Check (Wait-Until { (VHz) -eq '165' }) "start on AC: set to 165 Hz (now $(VHz))"
 $n = LogCount
 Check ((LogText) -notmatch 'notify Warning') 'no warnings at startup (the runner display offers only one rate)'
@@ -231,8 +243,25 @@ Check ((VHz) -eq '165') "remaining monitor still switched at 165 Hz on AC ($(VHz
 Check ((SavedDisplays).Count -eq $now.Count) 'unplugging keeps both monitors'' settings for next time'
 
 # ------------------------------------------------------------------ wrap up
-Write-Host "`n== Wrap up"
+Write-Host "`n== Performance and resource use"
 Check ((AppProcs).Count -eq 1) 'app still running after all scenarios'
+Start-Sleep 3
+$u1 = Usage
+Note ("after all scenarios: {0:N1} MB memory, {1} handles, {2} threads, {3:N0} ms CPU in total" -f ($u1.Private / 1MB), $u1.Handles, $u1.Threads, $u1.Cpu.TotalMilliseconds)
+Check ($u1.Private -lt 20MB) 'memory (Task Manager) still under 20 MB'
+Check ($u1.Handles -le $u0.Handles + 40) "no handle build-up from dozens of power and display events ($($u0.Handles) → $($u1.Handles))"
+Check ($u1.Threads -le $u0.Threads + 3) "no thread build-up ($($u0.Threads) → $($u1.Threads))"
+$c0 = (Usage).Cpu; Start-Sleep 20; $c1 = (Usage).Cpu
+$idleMs = ($c1 - $c0).TotalMilliseconds
+Note ("CPU over 20 s idle with three displays: {0:N0} ms" -f $idleMs)
+Check ($idleMs -lt 200) 'idle CPU use is negligible'
+$times = @(Get-Content $eventLog | ForEach-Object { if ($_ -match 'applied .* in (\d+) ms') { [int]$Matches[1] } })
+$slowest = ($times | Measure-Object -Maximum).Maximum
+$typical = ($times | Sort-Object)[[int]($times.Count / 2)]
+Note "re-applies: $($times.Count), typical $typical ms, slowest $slowest ms (includes the time the driver takes to switch)"
+Check ($typical -lt 100) 'a typical re-apply takes under 100 ms'
+
+Write-Host "`n== Wrap up"
 StopApp
 Check ((AppProcs).Count -eq 0) 'app exits when asked'
 Check (-not (Test-Path $errorLog)) 'no errors logged by the app'

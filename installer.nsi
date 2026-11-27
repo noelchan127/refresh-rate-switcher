@@ -17,12 +17,15 @@ Unicode true
 !define PUBLISHER "Noel Chan"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}"
 !define RUNKEY    "Software\Microsoft\Windows\CurrentVersion\Run"
+!define APPROVEDKEY "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"   ; Windows' Startup apps on/off switch
 !ifndef BINDIR
   !define BINDIR "bin\Release\net48"
 !endif
 
 Var StartWithWindows   ; 1 = add the startup entry
 Var OptionsCheckbox
+Var WasRunning         ; 1 = the app was running before setup closed it (a silent update starts it again)
+Var OldDir             ; where an earlier version was installed
 
 Name "${APPNAME}"
 OutFile "out\RefreshRateSwitcher-Setup-${VERSION}.exe"
@@ -60,7 +63,9 @@ Page custom OptionsPage OptionsPageLeave
 Function .onInit
   ; Default: start with Windows. When upgrading, keep whatever the user chose before.
   StrCpy $StartWithWindows 1
+  StrCpy $WasRunning 0
   ReadRegStr $0 HKCU "${UNINSTKEY}" "InstallLocation"
+  StrCpy $OldDir $0
   ${If} $0 != ""
     ReadRegStr $1 HKCU "${RUNKEY}" "${APPID}"
     ${If} $1 == ""
@@ -108,12 +113,13 @@ Function OptionsPageLeave
 FunctionEnd
 
 ; ---------------------------------------------------------------- closing a running copy
-; Only the copy installed in $INSTDIR matters: its file must be free to replace or remove it.
-; Other programs that happen to use the same file name, and copies run from elsewhere, are left alone.
-;  1. If the installed exe is in use, ask the app to exit (1.2.2+ listens for this signal) and wait.
-;  2. Still in use (1.2.1 or older, or the app is stuck): stop only the process running from that exact path.
+; Other programs that happen to use the same file name are never touched.
+;  1. Ask any running copy to exit (1.2.2+ listens for this signal, wherever it was installed) and wait.
+;  2. If the installed exe is still in use (1.2.1 or older, or the app is stuck): stop only the process
+;     running from that exact path.
 ;  3. Still in use: ask the user to close it (Retry / Cancel), or fail a silent install with exit code 2.
-!define EXITEVENT "Local\RefreshRateSwitcher_Exit"   ; must match TrayApp.ExitEventName
+!define EXITEVENT "Local\RefreshRateSwitcher_Exit"                 ; must match TrayApp.ExitEventName
+!define APPMUTEX  "Local\RefreshRateSwitcher_SingleInstance"       ; must match Program.cs
 
 ; $R9 = 1 if "$INSTDIR\${EXENAME}" exists and can't be opened for writing (i.e. it's running)
 !macro ExeInUse
@@ -143,28 +149,44 @@ FunctionEnd
   ${Loop}
 !macroend
 
+; Wait up to 5 seconds for the running copy to finish exiting (it holds this mutex while it runs)
+!macro WaitAppExited
+  StrCpy $R7 0
+  ${Do}
+    System::Call 'kernel32::OpenMutexW(i 0x00100000, i 0, t "${APPMUTEX}") p .R6'   ; SYNCHRONIZE
+    ${If} $R6 P= 0
+      ${Break}
+    ${EndIf}
+    System::Call 'kernel32::CloseHandle(p R6)'
+    ${If} $R7 >= 50
+      ${Break}
+    ${EndIf}
+    Sleep 100
+    IntOp $R7 $R7 + 1
+  ${Loop}
+!macroend
+
 !macro StopAppFunction UN
 Function ${UN}StopApp
-  !insertmacro ExeInUse
-  ${If} $R9 == 0
-    Return
-  ${EndIf}
-
   System::Call 'kernel32::OpenEventW(i 0x0002, i 0, t "${EXITEVENT}") p .R6'   ; EVENT_MODIFY_STATE
   ${If} $R6 P<> 0
+    StrCpy $WasRunning 1
     System::Call 'kernel32::SetEvent(p R6)'
     System::Call 'kernel32::CloseHandle(p R6)'
-    !insertmacro WaitExeFree
+    !insertmacro WaitAppExited
   ${EndIf}
 
+  !insertmacro WaitExeFree
   ${If} $R9 == 1
+    StrCpy $WasRunning 1
     ; The path goes through an environment variable so no quoting can break the command
     System::Call 'kernel32::SetEnvironmentVariableW(t "RRS_INSTALLED_EXE", t "$INSTDIR\${EXENAME}")'
     StrCpy $R5 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"   ; 64-bit PowerShell from this 32-bit setup
     ${IfNot} ${FileExists} $R5
       StrCpy $R5 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
     ${EndIf}
-    nsExec::Exec `"$R5" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -eq $$env:RRS_INSTALLED_EXE } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }"`
+    ; Only needed for 1.2.1 and older. A process of the same user needs no -Force, and an inline command needs no execution-policy change
+    nsExec::Exec `"$R5" -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -eq $$env:RRS_INSTALLED_EXE } | ForEach-Object { Stop-Process -Id $$_.ProcessId }"`
     Pop $R4
     !insertmacro WaitExeFree
   ${EndIf}
@@ -190,8 +212,8 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File "${BINDIR}\${EXENAME}"
   File "${BINDIR}\${EXENAME}.config"
-  File "app.ico"
   File "/oname=LICENSE.txt" "LICENSE"
+  Delete "$INSTDIR\app.ico"   ; installed by 1.2.2 and older, not needed (the icon is inside the exe)
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
@@ -216,6 +238,25 @@ Section "Install"
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair" 1
   WriteRegDWORD HKCU "${UNINSTKEY}" "EstimatedSize" 120
+
+  ; Installed to a different folder this time: remove the old copy's files (only ours, and the folder if empty)
+  ${If} $OldDir != ""
+  ${AndIf} $OldDir != $INSTDIR
+  ${AndIf} ${FileExists} "$OldDir\${EXENAME}"
+    Delete "$OldDir\${EXENAME}"
+    Delete "$OldDir\${EXENAME}.config"
+    Delete "$OldDir\app.ico"
+    Delete "$OldDir\LICENSE.txt"
+    Delete "$OldDir\Uninstall.exe"
+    RMDir  "$OldDir"
+  ${EndIf}
+
+  ; A silent update (e.g. from a script) starts the app again if it was running; an interactive one
+  ; offers "Start now" on the last page
+  ${If} ${Silent}
+  ${AndIf} $WasRunning == 1
+    Exec '"$INSTDIR\${EXENAME}" --background'
+  ${EndIf}
 SectionEnd
 
 Section "Uninstall"
@@ -231,6 +272,7 @@ Section "Uninstall"
 
   ; Startup entry, settings and the Installed-apps entry
   DeleteRegValue HKCU "${RUNKEY}" "${APPID}"
+  DeleteRegValue HKCU "${APPROVEDKEY}" "${APPID}"
   DeleteRegKey   HKCU "Software\${APPID}"
   DeleteRegKey   HKCU "${UNINSTKEY}"
 SectionEnd

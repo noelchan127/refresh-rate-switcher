@@ -47,10 +47,11 @@ namespace RefreshRateSwitcher
                 var d = displays[0];
                 var ds = s.Get(d.Key);
                 var rates = host.Rates(d);
-                if (ds != null && !ds.Managed)
+                if (ds != null)
                 {
-                    var manage = new ToolStripMenuItem("Switch this display") { Checked = false };
-                    manage.Click += (o, e) => host.SetManaged(d.Key, true);
+                    bool managed = ds.Managed;
+                    var manage = new ToolStripMenuItem("Switch this display") { Checked = managed };
+                    manage.Click += (o, e) => host.SetManaged(d.Key, !managed);
                     menu.Items.Add(manage);
                 }
                 menu.Items.Add(RateMenu("Plugged in", true, d, ds, rates, ac, host, bold));

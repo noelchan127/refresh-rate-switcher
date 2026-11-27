@@ -7,7 +7,7 @@ receives security fixes. Please update to it before reporting a problem.
 
 ## Reporting a vulnerability
 
-**Please don't report security problems in public issues or discussions.**
+**Please don't report security problems publicly.** This repository has no public issue tracker.
 
 Report them privately through GitHub instead:
 
@@ -25,6 +25,6 @@ In scope:
 - The Refresh Rate Switcher app and its installer/uninstaller
 - The build and release workflow in `.github/workflows`
 
-Not security issues (please open a normal issue if relevant):
+Not security issues (you're still welcome to report them, and ordinary bugs, through the same private form):
 - The Windows SmartScreen / antivirus warning caused by the installer not being code-signed
 - Incompatibility with Windows 11 Dynamic refresh rate (DRR), described in the README
