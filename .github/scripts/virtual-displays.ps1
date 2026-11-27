@@ -133,14 +133,19 @@ function Install-VirtualDisplays([int]$Count = 1, [int[]]$Rates = @(60, 120, 144
   # Driver-only package from the latest release, and nefcon (driver installer) – both signed
   $rel = Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } 'https://api.github.com/repos/VirtualDrivers/Virtual-Display-Driver/releases/latest'
   Write-Host "Virtual Display Driver release $($rel.tag_name): $(($rel.assets | ForEach-Object name) -join ', ')"
-  $asset = $rel.assets | Where-Object { $_.name -match 'Driver\.Only' -and $_.name -match 'x86|x64|amd64' -and $_.name -notmatch 'arm' } | Select-Object -First 1
+  $asset = $rel.assets | Where-Object { $_.name -match '^VirtualDisplayDriver' -and $_.name -match 'Driver\.Only' -and $_.name -match 'x86|x64|amd64' -and $_.name -notmatch 'arm' } | Select-Object -First 1
   if (-not $asset) { throw 'No driver-only x64 package found in the latest release' }
   Invoke-WebRequest $asset.browser_download_url -OutFile "$tmp\driver.zip" -UseBasicParsing
   Expand-Archive "$tmp\driver.zip" "$tmp\driver" -Force
   Invoke-WebRequest 'https://github.com/nefarius/nefcon/releases/download/v1.14.0/nefcon_v1.14.0.zip' -OutFile "$tmp\nefcon.zip" -UseBasicParsing
   Expand-Archive "$tmp\nefcon.zip" "$tmp\nefcon" -Force
 
-  $inf = Get-ChildItem "$tmp\driver" -Recurse -Filter 'MttVDD.inf' | Select-Object -First 1
+  Get-ChildItem "$tmp\driver" -Recurse | ForEach-Object { Write-Host "  $($_.FullName.Substring($tmp.Length)) $($_.Length)" }
+  # Some releases wrap the driver in a second zip
+  Get-ChildItem "$tmp\driver" -Recurse -Filter '*.zip' | ForEach-Object { Expand-Archive $_.FullName (Join-Path $_.DirectoryName $_.BaseName) -Force }
+  $inf = Get-ChildItem "$tmp\driver" -Recurse -Filter '*.inf' | Where-Object { $_.Name -match 'vdd' } | Select-Object -First 1
+  if (-not $inf) { $inf = Get-ChildItem "$tmp\driver" -Recurse -Filter '*.inf' | Select-Object -First 1 }
+  if (-not $inf) { throw 'No .inf file in the driver package' }
   $cat = Get-ChildItem $inf.DirectoryName -Filter '*.cat' | Select-Object -First 1
   Write-Host "Driver files: $($inf.FullName)"
 
