@@ -49,6 +49,7 @@ function Power([string]$text) {
 }
 function LogText { if (Test-Path $eventLog) { Get-Content $eventLog -Raw } else { '' } }
 function LogLinesSince([int]$n) { @(Get-Content $eventLog -ErrorAction SilentlyContinue | Select-Object -Skip $n) }
+function LogHas([int]$n, [string]$pattern) { [bool](@(LogLinesSince $n) -match $pattern).Count }
 function LogCount { @(Get-Content $eventLog -ErrorAction SilentlyContinue).Count }
 
 function AppProcs { @(Get-Process RefreshRateSwitcher -ErrorAction SilentlyContinue) }
@@ -113,13 +114,13 @@ Check ((LogText) -notmatch 'notify Warning') 'no warnings at startup (the runner
 Power 'battery'
 Check (Wait-Until { (VHz) -eq '60' }) "unplug: 60 Hz (now $(VHz))"
 Start-Sleep 1
-Check ((LogLinesSince $n) -match 'notify Info: On battery') 'unplug: "On battery" notification shown'
+Check (LogHas $n 'notify Info: On battery') 'unplug: "On battery" notification shown'
 
 $n = LogCount
 Power 'battery tick'
 Start-Sleep 4
 Check ((VHz) -eq '60') "battery-% update: rate unchanged ($(VHz))"
-Check (-not ((LogLinesSince $n) -match 'notify')) 'battery-% update: no notification'
+Check (-not (LogHas $n 'notify')) 'battery-% update: no notification'
 
 # A rate picked in Windows Settings stays until the power source changes
 $d = Virtual | Select-Object -First 1
@@ -134,7 +135,7 @@ $n = LogCount
 Power 'ac'
 Check (Wait-Until { (VHz) -eq '165' }) "plug in: 165 Hz (now $(VHz))"
 Start-Sleep 1
-Check ((LogLinesSince $n) -match 'notify Info: Plugged in') 'plug in: "Plugged in" notification shown'
+Check (LogHas $n 'notify Info: Plugged in') 'plug in: "Plugged in" notification shown'
 
 Power 'battery'
 Check (Wait-Until { (VHz) -eq '60' }) "unplug again: 60 Hz (now $(VHz))"
