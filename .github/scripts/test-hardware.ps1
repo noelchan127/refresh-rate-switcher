@@ -154,6 +154,17 @@ Start-Sleep 3
 Power 'ac resume'
 Check (Wait-Until { (VHz) -eq '165' } 15) "wake on AC after the driver reset the rate: back to 165 Hz (now $(VHz))"
 
+# Windows often sends a battery-% update right after waking: it mustn't cancel the wake re-apply
+$d = Virtual | Select-Object -First 1
+[Disp]::SetMode($d.Device, $d.Width, $d.Height, 60, 1) | Out-Null
+Start-Sleep 3
+Power 'ac resume'
+Start-Sleep -Milliseconds 500
+Power 'ac tick'
+Check (Wait-Until { (VHz) -eq '165' } 15) "wake followed by a battery-% update: still back to 165 Hz (now $(VHz))"
+Power 'ac'
+Start-Sleep 3
+
 # Unplugged while asleep: Windows reports the new power source on wake
 Power 'battery resume'
 Check (Wait-Until { (VHz) -eq '60' } 15) "woke on battery after being unplugged while asleep: 60 Hz (now $(VHz))"
