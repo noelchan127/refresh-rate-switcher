@@ -251,7 +251,7 @@ namespace RefreshRateSwitcher
         /// <param name="onlyKey">A change made in the app to one display: only that display is set again.</param>
         void Apply(string reason, string onlyKey = null)
         {
-            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            long started = System.Diagnostics.Stopwatch.GetTimestamp(), driverTicks = 0;
             List<DisplayInfo> displays;
             try { displays = Displays(); }
             catch { return; }
@@ -292,7 +292,9 @@ namespace RefreshRateSwitcher
                     string err = null;
                     if (d.CurrentHz != target)
                     {
+                        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                         err = NativeDisplay.SetRate(d.DeviceName, target);
+                        driverTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
                         _displayCache.InvalidateDisplays();   // the icon and window should show the new rate
                     }
                     if (err == null)
@@ -325,8 +327,8 @@ namespace RefreshRateSwitcher
             _form?.RefreshState();
             if (_testPower != null)
             {
-                long ms = (System.Diagnostics.Stopwatch.GetTimestamp() - started) * 1000 / System.Diagnostics.Stopwatch.Frequency;
-                _testPower.Log($"applied {reason} in {ms} ms: " + string.Join(", ", displays.Select(d => $"{d.Key}={d.CurrentHz}")) +
+                long total = System.Diagnostics.Stopwatch.GetTimestamp() - started, f = System.Diagnostics.Stopwatch.Frequency;
+                _testPower.Log($"applied {reason} in {(total - driverTicks) * 1000 / f} ms (+{driverTicks * 1000 / f} ms driver): " + string.Join(", ", displays.Select(d => $"{d.Key}={d.CurrentHz}")) +
                                (changed.Count > 0 ? " -> " + string.Join("; ", changed) : ""));
             }
         }

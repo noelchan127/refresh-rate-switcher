@@ -279,11 +279,15 @@ $c0 = (Usage).Cpu; Start-Sleep 20; $c1 = (Usage).Cpu
 $idleMs = ($c1 - $c0).TotalMilliseconds
 Note ("CPU over 20 s idle with three displays: {0:N0} ms" -f $idleMs)
 Check ($idleMs -lt 200) 'idle CPU use is negligible'
-$times = @(Get-Content $eventLog | ForEach-Object { if ($_ -match 'applied .* in (\d+) ms') { [int]$Matches[1] } })
-$slowest = ($times | Measure-Object -Maximum).Maximum
-$typical = ($times | Sort-Object)[[int]($times.Count / 2)]
-Note "re-applies: $($times.Count), typical $typical ms, slowest $slowest ms (includes the time the driver takes to switch)"
-Check ($typical -lt 100) 'a typical re-apply takes under 100 ms'
+$own = @(); $drv = @()
+Get-Content $eventLog | ForEach-Object { if ($_ -match 'applied .* in (\d+) ms \(\+(\d+) ms driver\)') { $own += [int]$Matches[1]; $drv += [int]$Matches[2] } }
+$ownSorted = $own | Sort-Object
+$typical = $ownSorted[[int]($own.Count / 2)]; $slowest = $ownSorted[-1]
+$drvMax = ($drv | Measure-Object -Maximum).Maximum
+Note "re-applies: $($own.Count); the app's own work: typical $typical ms, slowest $slowest ms; Windows switching the mode: up to $drvMax ms"
+Check ($own.Count -gt 20) 're-apply timings recorded'
+Check ($typical -lt 50) "a typical re-apply takes the app under 50 ms ($typical ms)"
+Check ($slowest -lt 500) "no re-apply takes the app half a second or more ($slowest ms)"
 
 Write-Host "`n== Wrap up"
 StopApp
