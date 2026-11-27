@@ -257,8 +257,10 @@ function Cycle {
     $n = LogCount; Power 'battery'; Wait-Until { LogHas $n 'applied power change' } | Out-Null
     $n = LogCount; Power 'ac'; Wait-Until { LogHas $n 'applied power change' } | Out-Null
   }
-  Set-VirtualDisplayCount 2 | Out-Null; Start-Sleep 4
-  Set-VirtualDisplayCount 1 | Out-Null; Start-Sleep 4
+  if (-not (Set-VirtualDisplayCount 2)) { Note 'virtual display driver stuck (test machine), skipped a reconnect' }
+  Start-Sleep 5
+  if (-not (Set-VirtualDisplayCount 1)) { Note 'virtual display driver stuck (test machine), skipped a reconnect' }
+  Start-Sleep 5
   Start-Process $Exe -ArgumentList '--test-power', "`"$powerFile`"" -Wait; Start-Sleep 2
   $w = [W32]::FindWindow([NullString]::Value, 'Refresh Rate Switcher')
   if ($w -ne [IntPtr]::Zero) { [W32]::PostMessage($w, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }

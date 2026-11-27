@@ -175,12 +175,27 @@ function Wait-VirtualDisplays([int]$Count, [int]$Seconds = 30) {
   return $false
 }
 
+# Restart the virtual display device (if the driver stops answering after many quick reloads)
+function Restart-VirtualDisplayDevice {
+  $dev = Get-PnpDevice -Class Display | Where-Object { $_.FriendlyName -match 'Virtual Display Driver' } | Select-Object -First 1
+  if ($dev) { Write-Host "restarting $($dev.InstanceId)"; pnputil /restart-device "$($dev.InstanceId)" | Out-Host }
+}
+
 # "Plug in" or "unplug" virtual monitors: the driver reloads with the new count
 function Set-VirtualDisplayCount([int]$Count) {
-  $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'MTTVirtualDisplayPipe', [System.IO.Pipes.PipeDirection]::InOut)
-  $pipe.Connect(5000)
-  $bytes = [Text.Encoding]::Unicode.GetBytes("SETDISPLAYCOUNT $Count")
-  $pipe.Write($bytes, 0, $bytes.Length); $pipe.Flush()
-  Start-Sleep 1; $pipe.Dispose()
-  Wait-VirtualDisplays $Count
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    try {
+      $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'MTTVirtualDisplayPipe', [System.IO.Pipes.PipeDirection]::InOut)
+      $pipe.Connect(10000)
+      $bytes = [Text.Encoding]::Unicode.GetBytes("SETDISPLAYCOUNT $Count")
+      $pipe.Write($bytes, 0, $bytes.Length); $pipe.Flush()
+      Start-Sleep 1; $pipe.Dispose()
+      if (Wait-VirtualDisplays $Count 30) { return $true }
+    } catch { Write-Host "virtual display driver didn't answer (attempt $attempt): $($_.Exception.Message)" }
+    # The count is saved in the settings file, so a restarted driver comes back with it
+    Write-VddSettings $Count @(60, 120, 144, 165)
+    Restart-VirtualDisplayDevice
+    if (Wait-VirtualDisplays $Count 30) { return $true }
+  }
+  return $false
 }
