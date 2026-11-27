@@ -24,7 +24,6 @@ Unicode true
 
 Var StartWithWindows   ; 1 = add the startup entry
 Var OptionsCheckbox
-Var WasRunning         ; 1 = the app was running before setup closed it (a silent update starts it again)
 Var OldDir             ; where an earlier version was installed
 
 Name "${APPNAME}"
@@ -63,7 +62,6 @@ Page custom OptionsPage OptionsPageLeave
 Function .onInit
   ; Default: start with Windows. When upgrading, keep whatever the user chose before.
   StrCpy $StartWithWindows 1
-  StrCpy $WasRunning 0
   ReadRegStr $0 HKCU "${UNINSTKEY}" "InstallLocation"
   StrCpy $OldDir $0
   ${If} $0 != ""
@@ -170,7 +168,6 @@ FunctionEnd
 Function ${UN}StopApp
   System::Call 'kernel32::OpenEventW(i 0x0002, i 0, t "${EXITEVENT}") p .R6'   ; EVENT_MODIFY_STATE
   ${If} $R6 P<> 0
-    StrCpy $WasRunning 1
     System::Call 'kernel32::SetEvent(p R6)'
     System::Call 'kernel32::CloseHandle(p R6)'
     !insertmacro WaitAppExited
@@ -178,7 +175,6 @@ Function ${UN}StopApp
 
   !insertmacro WaitExeFree
   ${If} $R9 == 1
-    StrCpy $WasRunning 1
     ; The path goes through an environment variable so no quoting can break the command
     System::Call 'kernel32::SetEnvironmentVariableW(t "RRS_INSTALLED_EXE", t "$INSTDIR\${EXENAME}")'
     StrCpy $R5 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"   ; 64-bit PowerShell from this 32-bit setup
@@ -251,12 +247,8 @@ Section "Install"
     RMDir  "$OldDir"
   ${EndIf}
 
-  ; A silent update (e.g. from a script) starts the app again if it was running; an interactive one
-  ; offers "Start now" on the last page
-  ${If} ${Silent}
-  ${AndIf} $WasRunning == 1
-    Exec '"$INSTDIR\${EXENAME}" --background'
-  ${EndIf}
+  ; A silent install doesn't start the app: a script waiting for setup to finish would otherwise wait
+  ; for the app too (it runs until sign-out). It starts at the next sign-in, or from the Start Menu.
 SectionEnd
 
 Section "Uninstall"

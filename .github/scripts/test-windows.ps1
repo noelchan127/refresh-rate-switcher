@@ -34,7 +34,9 @@ function AppProcs { @(Get-Process RefreshRateSwitcher -ErrorAction SilentlyConti
 function StopApp { AppProcs | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep 1 }
 
 function Install([string]$file, [string[]]$extra = @()) {
-  $p = Start-Process $file -ArgumentList (@('/S') + $extra) -Wait -PassThru
+  # -Wait would also wait for anything setup starts; wait for setup itself, with a time limit
+  $p = Start-Process $file -ArgumentList (@('/S') + $extra) -PassThru
+  if (-not $p.WaitForExit(120000)) { $p.Kill(); return -1 }
   return $p.ExitCode
 }
 function Uninstall {
@@ -211,10 +213,7 @@ function InstalledProcs { @(Get-CimInstance Win32_Process | Where-Object { $_.Ex
 $before = @(InstalledProcs)
 Check ($before.Count -eq 1) 'installed app running before reinstall'
 Check ((Install $setup) -eq 0) 'reinstall over a running app: exit code 0'
-Start-Sleep 3
-$after = @(InstalledProcs)
-Check ($after.Count -eq 1 -and $after[0].ProcessId -ne $before[0].ProcessId) 'silent reinstall closed the running app and started the new copy'
-Check ($after.Count -eq 1 -and $after[0].CommandLine -match '--background') '…in the tray only'
+Check ((InstalledProcs).Count -eq 0) 'reinstall asked the running app to exit (and setup finished: it doesn''t leave the app running under it)'
 $decoy.Refresh(); Check (-not $decoy.HasExited) 'unrelated program with the same file name still running after reinstall'
 Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 5
 Start-Process "$installDir\Uninstall.exe" -ArgumentList '/S' -Wait
@@ -242,13 +241,8 @@ try {
   Set-ItemProperty $settingsKey PluggedInHz 61   # recognisable values to check the migration
   Set-ItemProperty $settingsKey BatteryHz 59
 
-  $oldPid = (AppProcs)[0].Id
   Check ((Install $setup) -eq 0) 'upgrade over a running 1.1.3: exit code 0'
-  Start-Sleep 3
-  $procs = @(AppProcs)
-  Check ($procs.Count -eq 1 -and $procs[0].Id -ne $oldPid -and $procs[0].MainModule.FileVersionInfo.ProductVersion -like "$Version*") `
-        "upgrade replaced the running 1.1.3 with $Version ($(($procs | ForEach-Object { $_.MainModule.FileVersionInfo.ProductVersion }) -join ', '))"
-  StopApp
+  Check ((AppProcs).Count -eq 0) 'upgrade stopped the running 1.1.3'
   Check ((RunValue) -eq "`"$installedExe`" --background") 'upgrade updates the startup entry to tray-only'
   Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 6; StopApp
   $migrated = @(Get-ChildItem "$settingsKey\Displays" | ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.Managed -eq 1 })
@@ -272,14 +266,10 @@ if ($prev) {
     $prevSetup = Get-ChildItem $old2 -Filter '*Setup*.exe' | Select-Object -First 1
     Install $prevSetup.FullName | Out-Null
     Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 6
-    $oldPid = (AppProcs)[0].Id
     Set-ItemProperty $settingsKey Notifications 0      # a recognisable choice that must survive the upgrade
     $savedBefore = @(Get-ChildItem "$settingsKey\Displays").Count
     Check ((Install $setup) -eq 0) "upgrade over a running $prev`: exit code 0"
-    Start-Sleep 3
-    $procs = @(AppProcs)
-    Check ($procs.Count -eq 1 -and $procs[0].Id -ne $oldPid -and $procs[0].MainModule.FileVersionInfo.ProductVersion -like "$Version*") `
-          "$prev closed politely and $Version started in its place"
+    Check ((AppProcs).Count -eq 0) "$prev was asked to exit and closed"
     Check ((Get-ItemProperty $settingsKey).Notifications -eq 0 -and @(Get-ChildItem "$settingsKey\Displays").Count -eq $savedBefore) 'settings kept'
     Check ((RunValue) -eq "`"$installedExe`" --background") 'startup entry kept'
     Check (-not (Test-Path (Join-Path $installDir 'app.ico'))) "loose icon file from $prev removed"
@@ -292,14 +282,12 @@ Write-Host "`n== Reinstall into a different folder while the app is running"
 Install $setup | Out-Null
 Start-Process $installedExe -ArgumentList '--background'; Start-Sleep 5
 $otherDir = Join-Path $env:LOCALAPPDATA 'Programs\RRS Other Folder'
-$p = Start-Process $setup -ArgumentList '/S', "/D=$otherDir" -Wait -PassThru
+$p = Start-Process $setup -ArgumentList '/S', "/D=$otherDir" -PassThru; $p.WaitForExit(120000) | Out-Null
 Check ($p.ExitCode -eq 0) 'install into another folder: exit code 0'
-Start-Sleep 3
-$procs = @(Get-CimInstance Win32_Process -Filter "Name='$exeName'")
-Check ($procs.Count -eq 1 -and $procs[0].ExecutablePath -eq (Join-Path $otherDir $exeName)) "old copy closed, new copy running from the new folder ($(($procs | ForEach-Object ExecutablePath) -join ', '))"
+Check ((AppProcs).Count -eq 0) 'the copy running from the old folder was closed'
+Check (Test-Path (Join-Path $otherDir $exeName)) 'installed in the new folder'
 Check (-not (Test-Path $installDir)) 'old install folder removed'
 Check ((RunValue) -eq "`"$(Join-Path $otherDir $exeName)`" --background") 'startup entry points at the new folder'
-StopApp
 Start-Process (Join-Path $otherDir 'Uninstall.exe') -ArgumentList '/S' -Wait
 for ($i = 0; $i -lt 60 -and (Test-Path $uninstKey); $i++) { Start-Sleep -Milliseconds 500 }
 Start-Sleep 1
