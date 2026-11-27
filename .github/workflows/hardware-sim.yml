@@ -1,0 +1,47 @@
+name: Hardware scenarios
+
+# End-to-end tests with virtual monitors and simulated power events, on a throwaway Windows machine.
+# Runs on pull requests, on test/** branches and by hand from the Actions tab. Never releases anything.
+on:
+  push:
+    branches: ['test/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scenarios:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Virtual monitors (trial)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . ./.github/scripts/virtual-displays.ps1
+          Write-Host "== Before"; Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+          Install-VirtualDisplays -Count 1 -Rates 60,120,144,165
+          Write-Host "== After install"; Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+          $v = Get-VirtualDisplays
+          if ($v.Count -ge 1) {
+            $d = $v[0]
+            Write-Host "set 120 (permanent): $([Disp]::SetMode($d.Device, $d.Width, $d.Height, 120, 1))"
+            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+            Write-Host "temporary 1280x720@60: $([Disp]::SetMode($d.Device, 1280, 720, 60, 0))"
+            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+            Write-Host "restore: $([Disp]::Restore())"
+            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+            Write-Host "== Plug in a second monitor"
+            Set-VirtualDisplayCount 2 | Out-Null
+            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+            Write-Host "== Unplug it"
+            Set-VirtualDisplayCount 1 | Out-Null
+            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+          }
+          Get-PnpDevice -Class Display | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
