@@ -40,7 +40,7 @@ jobs:
           if ($app -ne $nsi) { throw "RefreshRateSwitcher.csproj ($app) and installer.nsi ($nsi) have different versions" }
           if ($env:RELEASE_VERSION) {
             $want = $env:RELEASE_VERSION -replace '^v', ''
-            if ($want -ne $app) { throw "Release version $want doesn't match the app version $app: bump both files first" }
+            if ($want -ne $app) { throw "Release version $want doesn't match the app version ${app}: bump both files first" }
             if (-not (Select-String -Path .github/release-notes.md -SimpleMatch $app -Quiet)) { throw ".github/release-notes.md doesn't mention $app" }
           }
 
