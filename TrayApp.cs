@@ -31,6 +31,7 @@ namespace RefreshRateSwitcher
         readonly DisplayCache _displayCache;
         (int hz, int argb, int size) _iconDrawn;   // what the tray icon currently shows
         int _retries;   // follow-up passes scheduled for failed changes or rates not reported yet
+        long _notifyTicks;   // test mode: time spent in Windows showing notifications during one Apply
 
         // Power source the rates were last applied for. Battery-percentage notifications arrive as
         // the same event as plugging in or unplugging; only a real change re-applies the rates.
@@ -252,6 +253,7 @@ namespace RefreshRateSwitcher
         void Apply(string reason, string onlyKey = null)
         {
             long started = System.Diagnostics.Stopwatch.GetTimestamp(), driverTicks = 0;
+            _notifyTicks = 0;
             List<DisplayInfo> displays;
             try { displays = Displays(); }
             catch { return; }
@@ -328,7 +330,8 @@ namespace RefreshRateSwitcher
             if (_testPower != null)
             {
                 long total = System.Diagnostics.Stopwatch.GetTimestamp() - started, f = System.Diagnostics.Stopwatch.Frequency;
-                _testPower.Log($"applied {reason} in {(total - driverTicks) * 1000 / f} ms (+{driverTicks * 1000 / f} ms driver): " + string.Join(", ", displays.Select(d => $"{d.Key}={d.CurrentHz}")) +
+                _testPower.Log($"applied {reason} in {(total - driverTicks - _notifyTicks) * 1000 / f} ms " +
+                               $"(+{driverTicks * 1000 / f} ms driver, +{_notifyTicks * 1000 / f} ms notification): " + string.Join(", ", displays.Select(d => $"{d.Key}={d.CurrentHz}")) +
                                (changed.Count > 0 ? " -> " + string.Join("; ", changed) : ""));
             }
         }
@@ -336,8 +339,10 @@ namespace RefreshRateSwitcher
         void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false)
         {
             if (!_settings.Notifications && !force) return;
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             _testPower?.Log($"notify {icon}: {title} | {text.Replace("\n", " / ")}");
             _tray.ShowBalloonTip(3000, title, text, icon);
+            _notifyTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         }
 
         void ShowMenu()
