@@ -46,7 +46,7 @@ Every release is built by [GitHub Actions](../../actions/workflows/release.yml) 
 this repository, so you can see exactly what went into it. If you'd rather not trust a pre-built binary,
 [build it from source](#build-from-source).
 
-To check that a download is genuine (from the next release on): each release lists the installer's SHA-256
+To check that a download is genuine (1.2.3 and later): each release lists the installer's SHA-256
 checksum in `SHA256SUMS.txt` (compare it with `Get-FileHash RefreshRateSwitcher-Setup-<version>.exe` in
 PowerShell), and carries a signed record that GitHub Actions built it from this repository
 (`gh attestation verify RefreshRateSwitcher-Setup-<version>.exe --repo noelchan127/refresh-rate-switcher`).
