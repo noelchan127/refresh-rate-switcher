@@ -249,8 +249,30 @@ Start-Sleep 3
 $u1 = Usage
 Note ("after all scenarios: {0:N1} MB memory, {1} handles, {2} threads, {3:N0} ms CPU in total" -f ($u1.Private / 1MB), $u1.Handles, $u1.Threads, $u1.Cpu.TotalMilliseconds)
 Check ($u1.Private -lt 20MB) 'memory (Task Manager) still under 20 MB'
-Check ($u1.Handles -le $u0.Handles + 40) "no handle build-up from dozens of power and display events ($($u0.Handles) → $($u1.Handles))"
-Check ($u1.Threads -le $u0.Threads + 3) "no thread build-up ($($u0.Threads) → $($u1.Threads))"
+Note "handles $($u0.Handles) → $($u1.Handles), threads $($u0.Threads) → $($u1.Threads) (first-time growth: more displays, settings window opened once)"
+
+# Leak check: repeat the same events many times; after the first round nothing should keep growing
+function Cycle {
+  for ($i = 0; $i -lt 5; $i++) {
+    $n = LogCount; Power 'battery'; Wait-Until { LogHas $n 'applied power change' } | Out-Null
+    $n = LogCount; Power 'ac'; Wait-Until { LogHas $n 'applied power change' } | Out-Null
+  }
+  Set-VirtualDisplayCount 2 | Out-Null; Start-Sleep 4
+  Set-VirtualDisplayCount 1 | Out-Null; Start-Sleep 4
+  Start-Process $Exe -ArgumentList '--test-power', "`"$powerFile`"" -Wait; Start-Sleep 2
+  $w = [W32]::FindWindow([NullString]::Value, 'Refresh Rate Switcher')
+  if ($w -ne [IntPtr]::Zero) { [W32]::PostMessage($w, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
+  Start-Sleep 3
+}
+Cycle
+$ua = Usage
+Cycle; Cycle; Cycle
+$ub = Usage
+Note ("after 1 round: {0} handles, {1} threads, {2:N1} MB; after 3 more rounds: {3} handles, {4} threads, {5:N1} MB" -f `
+      $ua.Handles, $ua.Threads, ($ua.Private / 1MB), $ub.Handles, $ub.Threads, ($ub.Private / 1MB))
+Check ($ub.Handles -le $ua.Handles + 15) "no handle leak over 30 power changes, 6 monitor reconnects and 3 settings windows ($($ua.Handles) → $($ub.Handles))"
+Check ($ub.Threads -le $ua.Threads + 2) "no thread leak ($($ua.Threads) → $($ub.Threads))"
+Check ($ub.Private -le [Math]::Max($ua.Private, 4MB) * 1.5) 'no memory growth'
 $c0 = (Usage).Cpu; Start-Sleep 20; $c1 = (Usage).Cpu
 $idleMs = ($c1 - $c0).TotalMilliseconds
 Note ("CPU over 20 s idle with three displays: {0:N0} ms" -f $idleMs)
