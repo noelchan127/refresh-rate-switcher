@@ -1,7 +1,8 @@
 name: Hardware scenarios
 
-# End-to-end tests with virtual monitors and simulated power events, on a throwaway Windows machine.
-# Runs on pull requests, on test/** branches and by hand from the Actions tab. Never releases anything.
+# The real app on a throwaway Windows machine with virtual monitors (several refresh rates, plugged
+# in and out) and a simulated charger/battery: see .github/scripts/test-hardware.ps1.
+# Runs on pull requests, test/** branches and by hand from the Actions tab. Never releases anything.
 on:
   push:
     branches: ['test/**']
@@ -20,28 +21,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Virtual monitors (trial)
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build app
+        run: dotnet build -c Release
+
+      - name: Hardware scenario tests
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          . ./.github/scripts/virtual-displays.ps1
-          Write-Host "== Before"; Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-          Install-VirtualDisplays -Count 1 -Rates 60,120,144,165
-          Write-Host "== After install"; Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-          $v = Get-VirtualDisplays
-          if ($v.Count -ge 1) {
-            $d = $v[0]
-            Write-Host "set 120 (permanent): $([Disp]::SetMode($d.Device, $d.Width, $d.Height, 120, 1))"
-            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-            Write-Host "temporary 1280x720@60: $([Disp]::SetMode($d.Device, 1280, 720, 60, 0))"
-            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-            Write-Host "restore: $([Disp]::Restore())"
-            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-            Write-Host "== Plug in a second monitor"
-            Set-VirtualDisplayCount 2 | Out-Null
-            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-            Write-Host "== Unplug it"
-            Set-VirtualDisplayCount 1 | Out-Null
-            Get-DisplayModes | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-          }
-          Get-PnpDevice -Class Display | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+          GH_TOKEN: ${{ github.token }}   # read-only; used to find the virtual display driver's latest release
+        run: ./.github/scripts/test-hardware.ps1
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hardware-test-results
+          path: test-results-hardware/
+          if-no-files-found: ignore

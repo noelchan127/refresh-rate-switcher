@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -46,8 +47,17 @@ namespace RefreshRateSwitcher
         readonly RegisteredWaitHandle _exitWait;
         readonly Control _uiInvoker = new Control();
 
-        public TrayApp(bool background)
+        // Test-only (--test-power <file>, used by CI): the power source and power events come from a file
+        // instead of Windows, because the test machines have no battery. Never used by a normal start.
+        readonly TestPower _testPower;
+
+        public TrayApp(bool background, string testPowerFile = null)
         {
+            if (testPowerFile != null)
+                _testPower = new TestPower(testPowerFile, mode =>
+                {
+                    try { _uiInvoker.BeginInvoke((Action)(() => HandlePowerEvent(mode))); } catch { }
+                });
             _settings = Settings.Load();
             bool firstRun = _settings.FirstRun;
             _displayCache = new DisplayCache(() =>
@@ -100,7 +110,8 @@ namespace RefreshRateSwitcher
         public Settings Settings => _settings;
 
         // Unknown (e.g. desktops without a battery) is treated as plugged in
-        public bool OnAC => SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Offline;
+        public bool OnAC => _testPower != null ? _testPower.OnAC
+                          : SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Offline;
 
         /// <summary>Connected displays, each keyed to the settings it was saved under (shared: read-only).</summary>
         public List<DisplayInfo> Displays() => _displayCache.Displays();
@@ -179,10 +190,15 @@ namespace RefreshRateSwitcher
 
         void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
+            if (_testPower == null) HandlePowerEvent(e.Mode);
+        }
+
+        void HandlePowerEvent(PowerModes mode)
+        {
             // StatusChange fires for AC/DC changes and also battery % changes: Apply() checks which.
             // Resume: some drivers reset the mode after sleep, so re-apply after a short delay.
-            if (e.Mode == PowerModes.StatusChange) Schedule("power status", 1500);
-            else if (e.Mode == PowerModes.Resume) { _displayCache.Invalidate(); Schedule("resume", 4000); }
+            if (mode == PowerModes.StatusChange) Schedule("power status", 1500);
+            else if (mode == PowerModes.Resume) { _displayCache.Invalidate(); Schedule("resume", 4000); }
         }
 
         void OnDisplaySettingsChanged(object sender, EventArgs e)
@@ -284,11 +300,14 @@ namespace RefreshRateSwitcher
 
             UpdateIcon();
             _form?.RefreshState();
+            _testPower?.Log($"applied {reason}: " + string.Join(", ", displays.Select(d => $"{d.Key}={d.CurrentHz}")) +
+                            (changed.Count > 0 ? " -> " + string.Join("; ", changed) : ""));
         }
 
         void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false)
         {
             if (!_settings.Notifications && !force) return;
+            _testPower?.Log($"notify {icon}: {title} | {text.Replace("\n", " / ")}");
             _tray.ShowBalloonTip(3000, title, text, icon);
         }
 
@@ -393,6 +412,7 @@ namespace RefreshRateSwitcher
             _showEvent.Dispose();
             _exitWait.Unregister(null);
             _exitEvent.Dispose();
+            _testPower?.Dispose();
             _uiInvoker.Dispose();
             _tray.Visible = false;
             _tray.Dispose();
@@ -449,6 +469,72 @@ namespace RefreshRateSwitcher
             _applied.Clear();
             _failed.Clear();
         }
+    }
+
+    /// <summary>
+    /// Test-only power source for CI machines, which have no battery. The file holds one line:
+    /// "ac" or "battery", optionally followed by "resume" (woke from sleep) or "tick" (battery-%
+    /// update, same source) and a number to make each write unique, e.g. "battery tick 3".
+    /// Each time the file is rewritten the app reacts as it would to the real
+    /// Windows event. What the app does is written to a .log file next to it.
+    /// </summary>
+    internal sealed class TestPower : IDisposable
+    {
+        readonly string _file, _log;
+        readonly FileSystemWatcher _watch;
+        readonly Action<PowerModes> _raise;
+        readonly object _lock = new object();
+        string _last = "";
+        public bool OnAC { get; private set; } = true;
+
+        public TestPower(string file, Action<PowerModes> raise)
+        {
+            _file = Path.GetFullPath(file);
+            _log = Path.ChangeExtension(_file, ".log");
+            _raise = raise;
+            if (!File.Exists(_file)) File.WriteAllText(_file, "ac");
+            Read(out _);
+            Log("test power source: " + (OnAC ? "ac" : "battery"));
+            _watch = new FileSystemWatcher(Path.GetDirectoryName(_file), Path.GetFileName(_file))
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
+            };
+            _watch.Changed += (s, e) => Changed();
+            _watch.Created += (s, e) => Changed();
+            _watch.Renamed += (s, e) => Changed();
+            _watch.EnableRaisingEvents = true;
+        }
+
+        bool Read(out string text)
+        {
+            text = null;
+            for (int i = 0; i < 10; i++)
+            {
+                try { text = File.ReadAllText(_file).Trim().ToLowerInvariant(); break; }
+                catch (IOException) { Thread.Sleep(50); }
+            }
+            if (string.IsNullOrEmpty(text)) return false;
+            OnAC = !text.StartsWith("battery");
+            return true;
+        }
+
+        void Changed()
+        {
+            lock (_lock)
+            {
+                if (!Read(out var text) || text == _last) return;   // one write can raise several events
+                _last = text;
+                Log("power event: " + text);
+                _raise(text.Contains("resume") ? PowerModes.Resume : PowerModes.StatusChange);
+            }
+        }
+
+        public void Log(string line)
+        {
+            try { lock (_lock) File.AppendAllText(_log, $"{DateTime.Now:HH:mm:ss.fff} {line}\r\n"); } catch { }
+        }
+
+        public void Dispose() => _watch.Dispose();
     }
 
     internal static class MemoryTrim

@@ -20,6 +20,7 @@ namespace RefreshRateSwitcher
         //   --background        start in the tray only – used by the "Start with Windows" entry
         //   --uninstall         remove the startup entry and saved settings
         //   --selftest <dir>    run built-in checks, write results to <dir> and exit (used by CI)
+        //   --test-power <file> CI only: take the power source from <file> (test machines have no battery)
         [STAThread]
         static int Main(string[] args)
         {
@@ -43,6 +44,8 @@ namespace RefreshRateSwitcher
             }
 
             bool background = Has(Settings.BackgroundArg);
+            int tp = Array.FindIndex(args, x => x.Equals("--test-power", StringComparison.OrdinalIgnoreCase));
+            string testPower = tp >= 0 && tp + 1 < args.Length ? args[tp + 1] : null;
 
             using (var mutex = new Mutex(true, @"Local\RefreshRateSwitcher_SingleInstance", out bool isNew))
             {
@@ -69,7 +72,7 @@ namespace RefreshRateSwitcher
                 // note it in %TEMP%\RefreshRateSwitcher-errors.log and carry on
                 Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
                 Application.ThreadException += (s, e) => LogError(e.Exception);
-                Application.Run(new TrayApp(background));
+                Application.Run(new TrayApp(background, testPower));
             }
             return 0;
         }
