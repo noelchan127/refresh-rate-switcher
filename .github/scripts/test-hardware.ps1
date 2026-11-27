@@ -279,14 +279,20 @@ $c0 = (Usage).Cpu; Start-Sleep 20; $c1 = (Usage).Cpu
 $idleMs = ($c1 - $c0).TotalMilliseconds
 Note ("CPU over 20 s idle with three displays: {0:N0} ms" -f $idleMs)
 Check ($idleMs -lt 200) 'idle CPU use is negligible'
-$own = @(); $drv = @(); $ntf = @()
+$own = @(); $drv = @(); $ntf = @(); $startup = @()
 Get-Content $eventLog | ForEach-Object {
-  if ($_ -match 'applied .* in (\d+) ms \(\+(\d+) ms driver, \+(\d+) ms notification\)') { $own += [int]$Matches[1]; $drv += [int]$Matches[2]; $ntf += [int]$Matches[3] }
+  if ($_ -match 'applied (.*) in (\d+) ms \(\+(\d+) ms driver, \+(\d+) ms notification\)') {
+    # The first pass at start-up also includes .NET loading the app: checked separately
+    if ($Matches[1] -eq 'startup') { $startup += [int]$Matches[2] }
+    else { $own += [int]$Matches[2]; $drv += [int]$Matches[3]; $ntf += [int]$Matches[4] }
+  }
 }
+Note "first pass at start-up: $($startup -join ' ms, ') ms"
+Check (($startup | Measure-Object -Maximum).Maximum -lt 2000) 'start-up pass under 2 seconds (includes .NET loading the app)'
 $ownSorted = $own | Sort-Object
 $typical = $ownSorted[[int]($own.Count / 2)]; $slowest = $ownSorted[-1]
 $drvMax = ($drv | Measure-Object -Maximum).Maximum; $ntfMax = ($ntf | Measure-Object -Maximum).Maximum
-Note "re-applies: $($own.Count); the app's own work: typical $typical ms, slowest $slowest ms; Windows switching the mode: up to $drvMax ms; Windows showing a notification: up to $ntfMax ms"
+Note "re-applies after events: $($own.Count); the app's own work: typical $typical ms, slowest $slowest ms; Windows switching the mode: up to $drvMax ms; Windows showing a notification: up to $ntfMax ms"
 Check ($own.Count -gt 20) 're-apply timings recorded'
 Check ($typical -lt 20) "a typical re-apply takes the app under 20 ms ($typical ms)"
 Check ($slowest -lt 500) "no re-apply takes the app half a second or more ($slowest ms)"
