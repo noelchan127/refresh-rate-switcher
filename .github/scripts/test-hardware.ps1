@@ -45,7 +45,10 @@ function VHz { (Virtual | ForEach-Object Hz) -join ',' }
 # Simulated power events: "ac", "battery", "<state> tick" (battery-% update), "<state> resume" (woke)
 function Power([string]$text) {
   $script:seq++
-  Set-Content -Path $powerFile -Value "$text $($script:seq)" -NoNewline
+  for ($i = 0; $i -lt 20; $i++) {   # the app may be reading the file at that moment
+    try { [IO.File]::WriteAllText($powerFile, "$text $($script:seq)"); return } catch { Start-Sleep -Milliseconds 100 }
+  }
+  throw "couldn't write $powerFile"
 }
 function LogText { if (Test-Path $eventLog) { Get-Content $eventLog -Raw } else { '' } }
 function LogLinesSince([int]$n) { @(Get-Content $eventLog -ErrorAction SilentlyContinue | Select-Object -Skip $n) }
