@@ -85,7 +85,7 @@ Write-Host "`n== Setup: one virtual monitor (60/120/144/165 Hz) next to the runn
 StopApp
 Remove-Item $settingsKey -Recurse -ErrorAction SilentlyContinue
 Remove-Item $errorLog, $eventLog -ErrorAction SilentlyContinue
-Check (Install-VirtualDisplays -Count 1 -Rates 60, 120, 144, 165) 'virtual monitor installed'
+Check ([bool](Install-VirtualDisplays -Count 1 -Rates 60, 120, 144, 165 | Select-Object -Last 1)) 'virtual monitor installed'
 Show 'displays'
 Set-Content $powerFile 'ac' -NoNewline
 

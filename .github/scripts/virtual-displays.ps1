@@ -159,9 +159,9 @@ function Install-VirtualDisplays([int]$Count = 1, [int[]]$Rates = @(60, 120, 144
   }
 
   $nefcon = Get-ChildItem "$tmp\nefcon" -Recurse -Filter 'nefconc.exe' | Where-Object { $_.DirectoryName -match 'x64' } | Select-Object -First 1
-  & $nefcon.FullName --create-device-node --hardware-id 'Root\MttVDD' --class-name Display --class-guid 4d36e968-e325-11ce-bfc1-08002be10318
+  & $nefcon.FullName --create-device-node --hardware-id 'Root\MttVDD' --class-name Display --class-guid 4d36e968-e325-11ce-bfc1-08002be10318 | Out-Host
   Write-Host "create-device-node exit $LASTEXITCODE"
-  & $nefcon.FullName --install-driver --inf-path $inf.FullName
+  & $nefcon.FullName --install-driver --inf-path $inf.FullName | Out-Host
   Write-Host "install-driver exit $LASTEXITCODE"
   Wait-VirtualDisplays $Count
 }
